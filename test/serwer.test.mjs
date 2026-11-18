@@ -98,6 +98,35 @@ try {
   r = await j('/stan', {}, C.token); assert.equal(r.s, 401); ok('zdalne odłączenie urządzenia');
   const k = (await j('/klucz-skrotu', { method: 'POST', json: {} }, A.token)).b; assert.ok(k.klucz); r = await j('/stan', {}, k.klucz); assert.equal(r.s, 200); ok('klucz do Skrótu');
 
+  // foldery
+  for (const x of (await j('/stan', {}, A.token)).b.rzeczy) if (x.rodzaj === 'plik') await j(`/rzeczy/${x.id}`, { method: 'DELETE' }, A.token);
+  const plikiF = [['Dzień 1/plaża.jpg', crypto.randomBytes(30000)], ['Dzień 1/zachód słońca.jpg', crypto.randomBytes(20000)], ['notatki.txt', Buffer.from('Zażółć gęślą jaźń')]];
+  r = await j('/foldery', { method: 'POST', json: { nazwa: 'Wakacje 2026', liczba: plikiF.length, rozmiar: plikiF.reduce((a, [, d]) => a + d.length, 0) } }, A.token);
+  const F = r.b; assert.equal(F.rodzaj, 'folder'); assert.equal(F.gotowy, false);
+  for (const [sc, d] of plikiF) {
+    const w2 = (await j('/wysylki', { method: 'POST', json: { nazwa: sc.split('/').pop(), rozmiar: d.length, folder: F.id, sciezka: sc } }, A.token)).b;
+    await j(`/wysylki/${w2.id}?od=0`, { method: 'PUT', body: d }, A.token);
+    r = await j(`/wysylki/${w2.id}/koniec`, { method: 'POST', json: {} }, A.token); assert.equal(r.b.folder, F.id);
+  }
+  r = await j(`/foldery/${F.id}/koniec`, { method: 'POST' }, A.token); assert.equal(r.b.gotowy, true);
+  sB = (await j('/stan', {}, B.token)).b;
+  const fB = sB.rzeczy.find((x) => x.id === F.id); assert.ok(fB.zip);
+  assert.equal(sB.rzeczy.filter((x) => x.folder === F.id).length, 3); ok('folder wysłany, drugie urządzenie widzi folder i jego pliki');
+  f = await fetch(API + fB.zip); assert.equal(f.status, 200);
+  const zipBuf = Buffer.from(await f.arrayBuffer()); assert.equal(zipBuf.length, Number(f.headers.get('content-length')));
+  const zp = path.join(KAT, 'test.zip'); fs.writeFileSync(zp, zipBuf);
+  const lista = execFileSync('python3', ['-c', `import zipfile,sys,json
+z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None
+print(json.dumps({n:z.read(n).hex() for n in z.namelist()}))`, zp]).toString();
+  const zaw = JSON.parse(lista);
+  for (const [sc, d] of plikiF) assert.equal(zaw['Wakacje 2026/' + sc], d.toString('hex'), sc);
+  ok('ZIP folderu poprawny (CRC, polskie nazwy, podfoldery)');
+  r = await j(`/rzeczy/${F.id}`, { method: 'PATCH', json: { przypiete: true } }, A.token);
+  sB = (await j('/stan', {}, B.token)).b; assert.ok(sB.rzeczy.filter((x) => x.folder === F.id).every((x) => x.przypiete)); ok('przypięcie folderu obejmuje pliki');
+  r = await j(`/rzeczy/${F.id}`, { method: 'DELETE' }, B.token); assert.equal(r.s, 200);
+  sB = (await j('/stan', {}, B.token)).b; assert.ok(!sB.rzeczy.some((x) => x.id === F.id || x.folder === F.id)); ok('usunięcie folderu usuwa pliki');
+  r = await j('/foldery', { method: 'POST', json: { nazwa: 'X', liczba: 1, rozmiar: 5_000_000_000 } }, A.token); assert.equal(r.s, 507); ok('za duży folder odrzucony');
+
   // blokada po 8 błędnych próbach
   for (let i = 0; i < 8; i++) await j('/polacz', { method: 'POST', json: { haslo: 'x' + i } });
   r = await j('/polacz', { method: 'POST', json: { haslo: 'Tajne Haslo 1' } }); assert.equal(r.s, 429); ok('blokada po 8 błędnych próbach');

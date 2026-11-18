@@ -1,5 +1,5 @@
 // Łącznik — service worker: działanie offline powłoki, powiadomienia, menu „Udostępnij” (Android, Windows)
-const WERSJA = '1.0.0';
+const WERSJA = '1.1.0';
 const PAMIEC = 'lacznik-' + WERSJA;
 const SKRZYNKA = 'lacznik-udostepnione';
 const POWLOKA = ['./', 'index.html', 'css/app.css?v=' + WERSJA, 'js/app.js?v=' + WERSJA, 'manifest.webmanifest',

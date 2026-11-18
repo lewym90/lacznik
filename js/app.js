@@ -1,5 +1,5 @@
 // Łącznik — aplikacja. Bez bibliotek.
-const WERSJA = '1.0.0';
+const WERSJA = '1.1.0';
 const API = (localStorage.getItem('lacznik.api') || 'https://188-68-247-201.sslip.io/lacznik-api').replace(/\/+$/, '');
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
@@ -35,7 +35,7 @@ const SCIEZKI = {
   kosz: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', zegar: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   wgore: '<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>', siatka: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   ustawienia: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
-  x: '<path d="M6 6l12 12M18 6L6 18"/>', wiecej: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>', folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', wiecej: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
   dzwonek: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>', oko: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   otworz: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>', lewo: '<path d="M15 6l-6 6 6 6"/>', prawo: '<path d="M9 6l6 6-6 6"/>',
   wklej: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6"/>', wszystkie: '<rect x="2" y="6" width="9" height="12" rx="2"/><rect x="13" y="4" width="9" height="16" rx="2"/>',
@@ -77,6 +77,7 @@ const bezOgonkow = (s) => String(s || '').toLowerCase().normalize('NFD').replace
 const nazwaUrz = (id) => (id == null ? 'Wszystkie' : (S.urzadzenia.find((u) => u.id === id)?.nazwa || 'Odłączone urządzenie'));
 const ikUrz = (typ) => ({ iphone: 'telefon', android: 'telefon', ipad: 'tablet', tablet: 'tablet', windows: 'laptop', mac: 'laptop', linux: 'laptop', skrot: 'skrot' }[typ] || 'telefon');
 const jestMedia = (r) => r.rodzaj === 'plik' && /^(image|video)\//.test(r.mime || '');
+const dzieci = (f) => S.rzeczy.filter((x) => x.folder === f.id).sort((a, b) => String(a.sciezka).localeCompare(String(b.sciezka), 'pl'));
 const jestFilm = (r) => /^video\//.test(r.mime || '');
 const wyswietlalny = (r) => /^image\/(jpeg|png|gif|webp|avif)$/.test(r.mime) || (iOS && /^image\/hei[cf]$/.test(r.mime));
 const url = (p) => API + p;
@@ -106,11 +107,12 @@ async function api(sciezka, { metoda = 'GET', json, cialo, sygnal } = {}) {
 }
 
 let komTimer;
-function komunikat(t, ikona = 'ok') {
+function komunikat(t, ikona = 'ok', czas = 2600) {
   document.querySelectorAll('.komunikat').forEach((k) => k.remove());
   const el = document.createElement('div'); el.className = 'komunikat'; el.setAttribute('role', 'status');
   el.innerHTML = `${ik(ikona)}<span>${esc(t)}</span>`; document.body.append(el);
-  clearTimeout(komTimer); komTimer = setTimeout(() => el.remove(), 2600);
+  clearTimeout(komTimer); if (czas) komTimer = setTimeout(() => el.remove(), czas);
+  return el;
 }
 async function kopiuj(t, co = 'Skopiowano') {
   try { await navigator.clipboard.writeText(t); }
@@ -162,7 +164,7 @@ function wyloguj(powod = '') {
 // ---------- szkielet ----------
 const FILTRY = [['wszystko', 'Wszystko', 'siatka'], ['zdjecia', 'Zdjęcia', 'foto'], ['pliki', 'Pliki', 'plik'], ['notatki', 'Notatki', 'notatka'],
   ['linki', 'Linki', 'link'], ['kody', 'Kody', 'kod'], ['przypiete', 'Przypięte', 'pinezka']];
-const pasuje = (r, f) => f === 'wszystko' || (f === 'zdjecia' && jestMedia(r)) || (f === 'pliki' && r.rodzaj === 'plik' && !jestMedia(r))
+const pasuje = (r, f) => f === 'wszystko' || (f === 'zdjecia' && jestMedia(r)) || (f === 'pliki' && ((r.rodzaj === 'plik' && !jestMedia(r)) || r.rodzaj === 'folder'))
   || (f === 'notatki' && r.rodzaj === 'notatka') || (f === 'linki' && r.rodzaj === 'link') || (f === 'kody' && r.rodzaj === 'kod') || (f === 'przypiete' && r.przypiete);
 
 function szkielet() {
@@ -197,7 +199,7 @@ function szkielet() {
         <div class="pud">
           <div class="zalaczniki ukryte" id="zalaczniki"></div>
           <div class="rzad">
-            <button type="button" class="ikb mie" data-a="dodaj-plik" aria-label="Dodaj zdjęcia lub pliki">${ik('plus')}</button>
+            <button type="button" class="ikb mie" data-a="dodaj-plik" aria-label="Dodaj zdjęcia, pliki albo folder">${ik('plus')}</button>
             <label for="tekst" class="sr">Wiadomość</label>
             <textarea id="tekst" rows="1" placeholder="Wklej lub napisz…" enterkeyhint="send"></textarea>
             <button type="submit" class="ikb akc" id="wyslij" aria-label="Wyślij" disabled>${ik('wyslij')}</button>
@@ -206,7 +208,7 @@ function szkielet() {
             <span id="rodzaj-miejsce"></span>
             ${dotyk && navigator.clipboard?.readText ? `<button type="button" class="wybor" data-a="wklej" style="margin-left:auto">${ik('wklej')}Wklej</button>` : ''}</div>
         </div>
-        <input type="file" id="wybor-plikow" multiple class="ukryte">
+        <input type="file" id="wybor-plikow" multiple class="ukryte"><input type="file" id="wybor-folderu" webkitdirectory multiple class="ukryte">
       </form>
     </main>
     <aside class="podglad" id="podglad" aria-label="Podgląd"></aside>
@@ -217,7 +219,8 @@ function szkielet() {
 // ---------- rysowanie ----------
 function widoczneRzeczy() {
   const q = bezOgonkow(S.szukaj.trim());
-  return S.rzeczy.filter((r) => pasuje(r, S.filtr) && (!q || bezOgonkow([r.tekst, r.tytul, r.url, r.nazwa, r.odNazwa, r.strona].join(' ')).includes(q)))
+  const tekstDo = (r) => [r.tekst, r.tytul, r.url, r.nazwa, r.odNazwa, r.strona, ...(r.rodzaj === 'folder' ? dzieci(r).map((d) => d.sciezka) : [])].join(' ');
+  return S.rzeczy.filter((r) => !r.folder && !(r.rodzaj === 'folder' && S.wysylki.some((w) => w.id === r.id)) && pasuje(r, S.filtr) && (!q || bezOgonkow(tekstDo(r)).includes(q)))
     .sort((a, b) => b.utworzone - a.utworzone);
 }
 function grupuj(lista) {
@@ -269,6 +272,7 @@ function kartaHTML(g) {
       <div class="rzad-akcji">${stopka(r, g.el)}<div class="akcje">
         <button class="p maly" data-a="zapisz" data-grupa="${g.klucz}">${ik(iOS ? 'udostepnij' : 'pobierz')}${iOS ? 'Zapisz' : n > 1 ? 'Pobierz wszystkie' : 'Pobierz'}</button></div></div></article>`;
   }
+  if (r.rodzaj === 'folder') return kartaFolderu(r, wyb, klik);
   if (r.rodzaj === 'kod') {
     const t = r.tekst.trim();
     return `<article class="karta${wyb}${klik}" data-klucz="${g.klucz}">${glowa('kod', 'Kod', r)}
@@ -294,7 +298,38 @@ function kartaHTML(g) {
     <div class="akcje"><a class="p maly" href="${esc(url(r.plik))}" target="_blank" rel="noopener">${ik('otworz')}Otwórz</a>
     <button class="p maly" data-a="zapisz" data-id="${r.id}">${ik(iOS ? 'udostepnij' : 'pobierz')}${iOS ? 'Zapisz' : 'Pobierz'}</button></div></div>${stopka(r)}</article>`;
 }
+function opisFolderu(f, d = dzieci(f)) {
+  const pod = new Set(d.map((x) => (x.sciezka || '').split('/').slice(0, -1).join('/')).filter(Boolean));
+  const n = d.length;
+  return `${n} ${odmiana(n, 'plik', 'pliki', 'plików')} · ${rozmiar(d.reduce((a, x) => a + x.rozmiar, 0))}${pod.size ? ` · ${pod.size} ${odmiana(pod.size, 'podfolder', 'podfoldery', 'podfolderów')}` : ''}`;
+}
+const umieFolder = () => 'showDirectoryPicker' in window;
+function listaPlikowHTML(f, d) {
+  return d.map((x) => `<a class="plik-w-folderze" href="${esc(url(x.plik))}" target="_blank" rel="noopener">${ik(jestMedia(x) ? (jestFilm(x) ? 'film' : 'foto') : 'plik')}<span>${esc(x.sciezka || x.nazwa)}</span><i>${rozmiar(x.rozmiar)}</i></a>`).join('');
+}
+function kartaFolderu(f, wyb, klik) {
+  const d = dzieci(f);
+  const media = d.filter((x) => jestMedia(x) && (x.miniatura || wyswietlalny(x))).slice(0, 4);
+  const mini = media.length ? `<div class="siatka n4">${media.map((x) => `<button class="mini" data-a="przegladaj" data-folder="${f.id}" data-id="${x.id}" aria-label="Otwórz ${esc(x.nazwa)}">
+    <span class="zast">${ik('foto')}</span><img loading="lazy" decoding="async" alt="" src="${esc(url(x.miniatura || x.plik))}" onload="this.classList.add('z')"></button>`).join('')}</div>` : '';
+  if (!f.gotowy) return `<article class="karta pelna${wyb}${klik}" data-klucz="${f.id}">${glowa('folder', esc(f.nazwa), f)}
+    <div class="dol">${ik('wgore')}<span>Trwa wysyłanie · ${d.length} ${odmiana(d.length, 'plik', 'pliki', 'plików')} · ${rozmiar(d.reduce((a, x) => a + x.rozmiar, 0))} z ${rozmiar(f.rozmiar)}</span></div></article>`;
+  return `<article class="karta pelna${wyb}${klik}" data-klucz="${f.id}">${glowa('folder', esc(f.nazwa), f)}
+    <div class="folder-info">${ik('folder')}<span>${opisFolderu(f, d)}</span></div>${mini}
+    <div class="lista-w-folderze ukryte">${listaPlikowHTML(f, d)}</div>
+    <div class="rzad-akcji">${stopka(f)}<div class="akcje"><button class="p maly cichy" data-a="pokaz-pliki">Pokaż pliki</button>
+    <button class="p maly glowny" data-a="pobierz-folder" data-id="${f.id}">${ik('pobierz')}Pobierz folder</button></div></div></article>`;
+}
 function wysylkaHTML(w) {
+  if (w.folderUp) {
+    const proc = Math.round(postepFolderu(w) * 100);
+    const stan = w.blad ? `<span style="color:var(--czerwony)">${esc(w.blad)}</span>` : w.czeka ? 'Czekam na połączenie…' : !w.id ? 'Przygotowuję…' : `Wysyłam ${w.gotowe} z ${w.pliki.length} · ${proc}%`;
+    return `<article class="karta wysylana pelna" data-klucz="w-${w.lid}">
+      <div class="glowa"><div class="znaczek folder">${ik('folder')}</div>
+      <div class="opis"><div class="tyt">${esc(w.nazwa)}</div><div class="meta">${w.pliki.length} ${odmiana(w.pliki.length, 'plik', 'pliki', 'plików')} · ${rozmiar(w.rozmiar)} → ${esc(nazwaUrz(w.do))} · ${stan}</div></div>
+      <button class="ikb bez" data-a="anuluj" data-lid="${w.lid}" aria-label="Anuluj wysyłanie">${ik('x')}</button></div>
+      <div class="postep" role="progressbar" aria-valuenow="${proc}" aria-valuemin="0" aria-valuemax="100" aria-label="Postęp wysyłania"><i style="width:${proc}%"></i></div></article>`;
+  }
   const proc = Math.round(w.postep * 100);
   const stan = w.blad ? `<span style="color:var(--czerwony)">${esc(w.blad)}</span>` : w.czeka ? 'Czekam na połączenie…' : w.postep >= 1 ? 'Kończę…' : `Wysyłam · ${proc}%`;
   return `<article class="karta wysylana pelna" data-klucz="w-${w.lid}">
@@ -334,7 +369,7 @@ function rysujListe() {
   oznaczOdebrane();
 }
 function rysujFiltry() {
-  const licz = (f) => S.rzeczy.filter((r) => pasuje(r, f)).length;
+  const licz = (f) => S.rzeczy.filter((r) => !r.folder && pasuje(r, f)).length;
   $('#chipy').innerHTML = FILTRY.map(([k, n]) => `<button class="chip" data-a="filtr" data-f="${k}" aria-pressed="${S.filtr === k}">${n}${k !== 'wszystko' && licz(k) ? ` <span class="ile">${licz(k)}</span>` : ''}</button>`).join('');
   $('#nawig').innerHTML = FILTRY.map(([k, n, i]) => `<button data-a="filtr" data-f="${k}" aria-pressed="${S.filtr === k}">${ik(i)}<span>${n}</span><i>${licz(k)}</i></button>`).join('');
   $('#tytul-sekcji').textContent = FILTRY.find((f) => f[0] === S.filtr)[1];
@@ -373,6 +408,9 @@ function rysujPodglad() {
       : `<img alt="${esc(r.nazwa)}" src="${esc(url(wyswietlalny(r) ? r.plik : r.miniatura || r.plik))}" data-a="przegladaj" data-id="${r.id}" data-grupa="${g.klucz}">`;
     duzy = `<div class="duzy">${duzy}</div>`; nazwa = g.el.length > 1 ? `${esc(r.nazwa)} <span style="color:var(--szary);font-weight:600;font-size:14px">· 1 z ${g.el.length}</span>` : esc(r.nazwa);
     akcje = `<button class="p glowny" data-a="zapisz" data-grupa="${g.klucz}">${ik('pobierz')}${g.el.length > 1 ? 'Pobierz wszystkie' : 'Pobierz'}</button>`;
+  } else if (r.rodzaj === 'folder') {
+    duzy = `<div class="duzy tekst"><div class="lista-w-folderze" style="padding:8px;max-height:52vh;overflow:auto">${listaPlikowHTML(r, dzieci(r))}</div></div>`;
+    nazwa = esc(r.nazwa); akcje = r.gotowy ? `<button class="p glowny" data-a="pobierz-folder" data-id="${r.id}">${ik('pobierz')}Pobierz folder</button>` : '';
   } else if (r.rodzaj === 'plik') {
     duzy = r.mime === 'application/pdf' ? `<div class="duzy" style="min-height:420px"><iframe title="${esc(r.nazwa)}" src="${esc(url(r.plik))}" style="width:100%;height:420px;border:0"></iframe></div>` : `<div class="duzy"><div class="znaczek plik" style="width:72px;height:72px">${ik('plik')}</div></div>`;
     nazwa = esc(r.nazwa); akcje = `<a class="p" href="${esc(url(r.plik))}" target="_blank" rel="noopener">${ik('otworz')}Otwórz</a><button class="p glowny" data-a="zapisz" data-id="${r.id}">${ik('pobierz')}Pobierz</button>`;
@@ -401,7 +439,7 @@ function rysuj() {
 function oznaczOdebrane() {
   if (document.visibilityState !== 'visible' || !S.ja) return;
   for (const r of S.rzeczy) {
-    if (r.od === S.ja.id || odebraneWyslane.has(r.id) || (r.odebrane && r.odebrane[S.ja.id])) continue;
+    if (r.folder || r.od === S.ja.id || odebraneWyslane.has(r.id) || (r.odebrane && r.odebrane[S.ja.id])) continue;
     odebraneWyslane.add(r.id);
     api(`/rzeczy/${r.id}/odebrane`, { metoda: 'POST' }).catch(() => odebraneWyslane.delete(r.id));
   }
@@ -469,8 +507,27 @@ function odswiezPisanie() {
   $('#wyslij').disabled = !t && !S.zalaczniki.length;
   const z = $('#zalaczniki');
   z.classList.toggle('ukryte', !S.zalaczniki.length);
-  z.innerHTML = S.zalaczniki.map((p, i) => `<div class="zal">${p.podglad ? `<img alt="" src="${p.podglad}">` : ik(/^video\//.test(p.plik.type) ? 'film' : 'plik')}
+  z.innerHTML = S.zalaczniki.map((p, i) => p.folder
+    ? `<div class="zal fold">${ik('folder')}<span class="nz">${esc(p.nazwa)} · ${p.pliki.length}</span><button type="button" class="x" data-a="usun-zal" data-i="${i}" aria-label="Usuń folder ${esc(p.nazwa)}">${ik('x')}</button></div>`
+    : `<div class="zal">${p.podglad ? `<img alt="" src="${p.podglad}">` : ik(/^video\//.test(p.plik.type) ? 'film' : 'plik')}
     <span class="nz">${esc(p.plik.name)}</span><button type="button" class="x" data-a="usun-zal" data-i="${i}" aria-label="Usuń ${esc(p.plik.name)}">${ik('x')}</button></div>`).join('');
+}
+function dodajFolder(nazwa, pliki) {
+  pliki = pliki.filter((p) => p.plik && p.plik.size && !/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(p.sciezka));
+  if (!pliki.length) { komunikat('Ten folder jest pusty', 'x'); return; }
+  S.zalaczniki.push({ folder: true, nazwa: nazwa || 'Folder', pliki, rozmiar: pliki.reduce((a, p) => a + p.plik.size, 0) });
+  odswiezPisanie(); if (!dotyk) $('#tekst').focus();
+}
+function folderZWyboru(lista) {
+  const pliki = [...lista]; if (!pliki.length) return;
+  const grupy = new Map();
+  for (const f of pliki) {
+    const sc = (f.webkitRelativePath || f.name).split('/');
+    const nazwa = sc.length > 1 ? sc[0] : 'Folder';
+    if (!grupy.has(nazwa)) grupy.set(nazwa, []);
+    grupy.get(nazwa).push({ plik: f, sciezka: sc.length > 1 ? sc.slice(1).join('/') : f.name });
+  }
+  for (const [n, p] of grupy) dodajFolder(n, p);
 }
 function dodajZalaczniki(pliki) {
   for (const plik of pliki) {
@@ -485,7 +542,7 @@ async function wyslij() {
   const ta = $('#tekst'); const tekst = ta.value; const doId = S.do ? Number(S.do) : null;
   const zal = S.zalaczniki.splice(0);
   ta.value = ''; const wym = S.wymuszonyRodzaj; S.wymuszonyRodzaj = null; odswiezPisanie();
-  for (const z of zal) { if (z.podglad) setTimeout(() => URL.revokeObjectURL(z.podglad), 30e3); kolejkuj(z.plik, doId); }
+  for (const z of zal) { if (z.folder) { kolejkujFolder(z, doId); continue; } if (z.podglad) setTimeout(() => URL.revokeObjectURL(z.podglad), 30e3); kolejkuj(z.plik, doId); }
   if (tekst.trim()) {
     try {
       const r = await api('/rzeczy', { metoda: 'POST', json: { tekst, do: doId, rodzaj: wym || undefined } });
@@ -518,33 +575,63 @@ function miniatura(plik) {
   });
 }
 let licznikW = 0, aktywne = 0;
+const kolejka = [];
 function kolejkuj(plik, doId) {
   const w = { lid: ++licznikW, plik, nazwa: plik.name || 'plik', rozmiar: plik.size, mime: plik.type || '', do: doId, postep: 0, id: null, blad: null, czeka: false, anulowane: false };
   if (S.miejsce && plik.size > S.miejsce.maxPlik) w.blad = `Za duży — limit to ${rozmiar(S.miejsce.maxPlik)}`;
-  S.wysylki.unshift(w); rysujListe(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  S.wysylki.unshift(w); kolejka.push(w); rysujListe(); window.scrollTo({ top: 0, behavior: 'smooth' });
   pompuj();
 }
+const postepFolderu = (fw) => (fw.dzieci || []).reduce((a, w) => a + w.postep * w.rozmiar, 0) / Math.max(1, fw.rozmiar);
+async function kolejkujFolder(z, doId) {
+  const fw = { lid: ++licznikW, folderUp: true, nazwa: z.nazwa, pliki: z.pliki, rozmiar: z.rozmiar, do: doId, gotowe: 0, dzieci: [], id: null, blad: null, czeka: false, anulowane: false };
+  const zaDuzy = S.miejsce && z.pliki.find((p) => p.plik.size > S.miejsce.maxPlik);
+  if (zaDuzy) fw.blad = `${zaDuzy.plik.name} jest za duży — limit to ${rozmiar(S.miejsce.maxPlik)}`;
+  S.wysylki.unshift(fw); rysujListe(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (fw.blad) return;
+  try {
+    const f = await api('/foldery', { metoda: 'POST', json: { nazwa: z.nazwa, liczba: z.pliki.length, rozmiar: z.rozmiar, do: doId } });
+    fw.id = f.id;
+  } catch (e) { fw.blad = e.message; rysujListe(); return; }
+  if (fw.anulowane) { api(`/rzeczy/${fw.id}`, { metoda: 'DELETE' }).catch(() => {}); return; }
+  for (const p of z.pliki) {
+    const w = { lid: ++licznikW, plik: p.plik, nazwa: p.plik.name || 'plik', sciezka: p.sciezka, rozmiar: p.plik.size, mime: p.plik.type || '', do: doId,
+      postep: 0, id: null, blad: null, czeka: false, anulowane: false, rodzic: fw };
+    fw.dzieci.push(w); kolejka.push(w);
+  }
+  rysujListe(); pompuj();
+}
+async function koniecFolderu(fw) {
+  try {
+    const f = await api(`/foldery/${fw.id}/koniec`, { metoda: 'POST' });
+    S.wysylki = S.wysylki.filter((x) => x !== fw);
+    const i = S.rzeczy.findIndex((x) => x.id === f.id); if (i >= 0) S.rzeczy[i] = f; else S.rzeczy.push(f);
+    S.nowe.add(f.id); rysuj();
+  } catch (e) { fw.blad = e.message; rysujListe(); }
+}
 function pompuj() {
-  while (aktywne < 2) {
-    const w = [...S.wysylki].reverse().find((x) => !x.start && !x.blad && !x.anulowane); if (!w) return;
+  while (aktywne < 3) {
+    const w = kolejka.find((x) => !x.start && !x.blad && !x.anulowane && !x.rodzic?.anulowane && !x.rodzic?.blad); if (!w) return;
     w.start = true; aktywne++;
     wysylaj(w).finally(() => { aktywne--; pompuj(); });
   }
 }
 const czekaj = (ms) => new Promise((ok) => setTimeout(ok, ms));
 async function wysylaj(w) {
-  const odswiez = () => { const el = document.querySelector(`[data-klucz="w-${w.lid}"]`); if (el) { const n = wysylkaHTML(w); if (el._html !== n) rysujListe(); } };
+  const gora = w.rodzic || w;
+  const odswiez = () => { if (w.rodzic) w.rodzic.czeka = w.czeka; const el = document.querySelector(`[data-klucz="w-${gora.lid}"]`); if (el) { const n = wysylkaHTML(gora); if (el._html !== n) rysujListe(); } };
+  const blad = (m) => { if (w.rodzic) { w.rodzic.blad = m; } w.blad = m; rysujListe(); };
   try {
-    w.mini = /^(image|video)\//.test(w.mime) ? await miniatura(w.plik) : null;
+    w.mini = (w.rodzic ? /^image\//.test(w.mime) && w.rozmiar < 60e6 : /^(image|video)\//.test(w.mime)) ? await miniatura(w.plik) : null;
     let proba = 0;
     for (;;) {
       if (w.anulowane) return;
       try {
-        if (!w.id) { const r = await api('/wysylki', { metoda: 'POST', json: { nazwa: w.nazwa, mime: w.mime, rozmiar: w.rozmiar, do: w.do } }); w.id = r.id; w.kawalek = r.kawalek; w.od = 0; }
+        if (!w.id) { const r = await api('/wysylki', { metoda: 'POST', json: { nazwa: w.nazwa, mime: w.mime, rozmiar: w.rozmiar, do: w.do, folder: w.rodzic?.id, sciezka: w.sciezka } }); w.id = r.id; w.kawalek = r.kawalek; w.od = 0; }
         else { const r = await api(`/wysylki/${w.id}`); w.od = r.odebrano; }
         w.czeka = false; odswiez();
         while (w.od < w.rozmiar) {
-          if (w.anulowane) return;
+          if (w.anulowane || w.rodzic?.anulowane) return;
           const kaw = w.plik.slice(w.od, Math.min(w.rozmiar, w.od + w.kawalek));
           const r = await new Promise((ok, zle) => {
             const x = new XMLHttpRequest(); w.xhr = x;
@@ -558,20 +645,59 @@ async function wysylaj(w) {
         }
         w.postep = 1; odswiez();
         const r = await api(`/wysylki/${w.id}/koniec`, { metoda: 'POST', json: { miniatura: w.mini?.dane, szer: w.mini?.szer, wys: w.mini?.wys } });
-        S.wysylki = S.wysylki.filter((x) => x !== w);
+        kolejka.splice(kolejka.indexOf(w), 1);
         if (!S.rzeczy.some((x) => x.id === r.id)) S.rzeczy.push(r);
+        if (w.rodzic) {
+          w.rodzic.gotowe++; odswiez();
+          if (w.rodzic.gotowe === w.rodzic.dzieci.length) await koniecFolderu(w.rodzic);
+          return;
+        }
+        S.wysylki = S.wysylki.filter((x) => x !== w);
         rysuj(); return;
       } catch (e) {
-        if (w.anulowane || e.status === -1) return;
-        if (e.status && e.status !== 0 && e.status < 500 && e.status !== 409) { w.blad = e.message; odswiez(); rysujListe(); return; }
-        if (e.status === 507) { w.blad = e.message; rysujListe(); return; }
+        if (w.anulowane || w.rodzic?.anulowane || e.status === -1) return;
+        if (e.status && e.status !== 0 && e.status < 500 && e.status !== 409) { blad(e.message); return; }
+        if (e.status === 507) { blad(e.message); return; }
         w.czeka = true; odswiez(); rysujListe();
         await czekaj(Math.min(30000, 2000 * 2 ** proba++));
       }
     }
-  } catch (e) { w.blad = e.message || 'Błąd'; rysujListe(); }
+  } catch (e) { blad(e.message || 'Błąd'); }
 }
 function wznowWysylki() { S.wysylki.forEach((w) => { if (w.czeka) w.czeka = false; }); }
+
+// ---------- pobieranie folderu: folder tam, gdzie przeglądarka umie, ZIP na iPhonie ----------
+function pobierzZip(f) {
+  const a = document.createElement('a'); a.href = url(f.zip); a.download = f.nazwa + '.zip'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove();
+  if (iOS) komunikat('Folder przyjdzie jako ZIP. W Plikach stuknij go, rozpakuje się sam.', 'folder', 6000);
+}
+async function pobierzFolder(f) {
+  const d = dzieci(f);
+  if (!umieFolder()) return pobierzZip(f);
+  let kat;
+  try { kat = await window.showDirectoryPicker({ id: 'lacznik', mode: 'readwrite', startIn: 'downloads' }); }
+  catch (e) { if (e.name === 'AbortError') return; return pobierzZip(f); }
+  const kom = komunikat(`Pobieram „${f.nazwa}” · 0 z ${d.length}`, 'pobierz', 0);
+  try {
+    let nazwa = f.nazwa, n = 2;
+    for (;;) { try { await kat.getDirectoryHandle(nazwa); nazwa = `${f.nazwa} (${n++})`; } catch { break; } }
+    const cel = await kat.getDirectoryHandle(nazwa, { create: true });
+    let ile = 0;
+    for (const x of d) {
+      const sc = (x.sciezka || x.nazwa).split('/'); let k = cel;
+      for (const s of sc.slice(0, -1)) k = await k.getDirectoryHandle(s, { create: true });
+      const uchwyt = await k.getFileHandle(sc[sc.length - 1], { create: true });
+      const odp = await fetch(url(x.plik)); if (!odp.ok) throw new Error(`nie udało się pobrać ${x.nazwa}`);
+      await odp.body.pipeTo(await uchwyt.createWritable());
+      kom.querySelector('span').textContent = `Pobieram „${f.nazwa}” · ${++ile} z ${d.length}`;
+    }
+    kom.remove(); komunikat(`Folder „${nazwa}” zapisany`, 'folder');
+  } catch (e) {
+    kom.remove();
+    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') { komunikat('Brak zgody na zapis w tym miejscu. Pobieram jako ZIP.', 'x'); pobierzZip(f); }
+    else komunikat(`Nie udało się zapisać folderu: ${e.message}`, 'x', 5000);
+  }
+}
 
 // ---------- zapisywanie, udostępnianie ----------
 async function blob(r) {
@@ -596,8 +722,10 @@ async function zapisz(rzeczy) {
 }
 
 // ---------- przeglądarka zdjęć i filmów ----------
-function przegladaj(grupaKlucz, id) {
-  const g = grupuj(widoczneRzeczy()).find((x) => x.klucz === grupaKlucz); if (!g) return;
+function przegladaj(grupaKlucz, id, folderId) {
+  const g = folderId ? { el: S.rzeczy.filter((x) => x.folder === folderId && jestMedia(x)).sort((a, b) => String(a.sciezka).localeCompare(String(b.sciezka), 'pl')) }
+    : grupuj(widoczneRzeczy()).find((x) => x.klucz === grupaKlucz);
+  if (!g || !g.el.length) return;
   let i = Math.max(0, g.el.findIndex((x) => x.id === id));
   const el = document.createElement('div'); el.className = 'przegladarka'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'Podgląd');
   const pokaz = () => {
@@ -651,6 +779,15 @@ function potwierdz(tytul, tekst, przycisk) {
     z.addEventListener('click', (e) => { const w = e.target.closest('[data-w]')?.dataset.w; if (w) { wynik = w === 'tak'; z._zamknij(); } });
   });
 }
+function arkuszDodaj() {
+  const z = arkusz(`<h2>Dodaj</h2><div class="lista-op" style="margin-top:12px">
+    <button class="op" data-d="pliki"><span class="znaczek">${ik('foto')}</span><span class="t"><b>Zdjęcia i pliki</b><span>Jedno albo wiele naraz</span></span></button>
+    <button class="op" data-d="folder"><span class="znaczek">${ik('folder')}</span><span class="t"><b>Cały folder</b><span>Razem z podfolderami</span></span></button></div>`);
+  z.addEventListener('click', (e) => {
+    const d = e.target.closest('[data-d]')?.dataset.d; if (!d) return;
+    z._zamknij(); $(d === 'folder' ? '#wybor-folderu' : '#wybor-plikow').click();
+  });
+}
 function arkuszDo() {
   const opcje = [{ id: '', nazwa: 'Wszystkie urządzenia', opis: 'Pojawi się wszędzie', ik: 'wszystkie' },
     ...S.urzadzenia.filter((u) => u.id !== S.ja?.id && u.typ !== 'skrot').map((u) => ({ id: String(u.id), nazwa: u.nazwa, opis: u.online ? 'aktywne teraz' : `ostatnio ${kiedy(u.ostatnio)}`, ik: ikUrz(u.typ) }))];
@@ -667,19 +804,21 @@ function menuRzeczy(r, poAkcji) {
   const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id));
   const el = g?.typ === 'media' ? g.el : [r];
   const tekst = r.rodzaj === 'link' ? r.url : r.tekst;
-  const z = arkusz(`<h2>${esc(r.rodzaj === 'plik' ? (el.length > 1 ? opisMediow(el) : r.nazwa) : r.rodzaj === 'link' ? (r.tytul || 'Link') : r.rodzaj === 'kod' ? 'Kod' : 'Notatka')}</h2>
+  const z = arkusz(`<h2>${esc(r.rodzaj === 'folder' ? r.nazwa : r.rodzaj === 'plik' ? (el.length > 1 ? opisMediow(el) : r.nazwa) : r.rodzaj === 'link' ? (r.tytul || 'Link') : r.rodzaj === 'kod' ? 'Kod' : 'Notatka')}</h2>
     <p>${esc(r.odNazwa)} → ${esc(r.do == null ? 'Wszystkie urządzenia' : nazwaUrz(r.do))} · ${kiedy(r.utworzone)}</p>
     <div class="lista-op" style="margin-top:12px">
       ${tekst ? `<button class="op" data-m="kopiuj"><span class="znaczek">${ik('kopiuj')}</span><span class="t"><b>Kopiuj</b></span></button>` : ''}
+      ${r.rodzaj === 'folder' && r.gotowy ? `<button class="op" data-m="folder"><span class="znaczek">${ik('pobierz')}</span><span class="t"><b>Pobierz folder</b><span>${opisFolderu(r)}${umieFolder() ? '' : ' · jako ZIP'}</span></span></button>` : ''}
       ${r.rodzaj === 'plik' ? `<button class="op" data-m="zapisz"><span class="znaczek">${ik(iOS ? 'udostepnij' : 'pobierz')}</span><span class="t"><b>${iOS ? 'Zapisz lub udostępnij' : 'Pobierz'}</b><span>${rozmiar(el.reduce((a, x) => a + x.rozmiar, 0))}</span></span></button>` : ''}
       <button class="op" data-m="przypnij"><span class="znaczek">${ik('pinezka')}</span><span class="t"><b>${r.przypiete ? 'Odepnij' : 'Przypnij'}</b><span>${r.przypiete ? 'Wróci do zwykłego znikania' : 'Zostanie na stałe, nie zniknie sama'}</span></span></button>
-      <button class="op" data-m="usun" style="color:var(--czerwony)"><span class="znaczek" style="color:var(--czerwony)">${ik('kosz')}</span><span class="t"><b>Usuń ze wszystkich urządzeń</b></span></button>
+      <button class="op" data-m="usun" style="color:var(--czerwony)"><span class="znaczek" style="color:var(--czerwony)">${ik('kosz')}</span><span class="t"><b>Usuń ze wszystkich urządzeń</b>${r.rodzaj === 'folder' ? `<span>Razem ze wszystkimi plikami w środku</span>` : ''}</span></button>
     </div>`);
   z.addEventListener('click', async (e) => {
     const m = e.target.closest('[data-m]')?.dataset.m; if (!m) return;
     z._zamknij();
     if (m === 'kopiuj') kopiuj(tekst);
     if (m === 'zapisz') zapisz(el);
+    if (m === 'folder') pobierzFolder(r);
     if (m === 'przypnij') przypnij(el, !r.przypiete);
     if (m === 'usun') { if (await usun(el)) poAkcji?.(); }
   });
@@ -726,21 +865,6 @@ function arkuszUstawien(odswiez = false) {
     <div class="t"><b>${esc(u.nazwa)}${u.id === S.ja?.id ? ' <span style="color:var(--akcent);font-size:12px">· to urządzenie</span>' : ''}</b>
     <span>${u.typ === 'skrot' ? 'Skrót iOS · ' : ''}${u.online ? 'aktywne teraz' : 'ostatnio ' + kiedy(u.ostatnio)}${u.push ? ' · powiadomienia' : ''}</span></div>
     ${u.id === S.ja?.id ? `<button class="p maly" data-u="zmien-nazwe">Zmień nazwę</button>` : `<button class="p maly uwaga" data-u="odlacz" data-id="${u.id}">Odłącz</button>`}</div>`).join('');
-  const skrot = iOS || !dotyk ? `<h3>Menu „Udostępnij” na iPhonie</h3>
-    <p>Na iPhonie Łącznik dodasz do menu Udostępnij przez aplikację Skróty. Ustawiasz to raz, potem w Zdjęciach i Plikach stukasz Udostępnij → Łącznik.</p>
-    ${kluczSkrotu ? `<ol class="kroki">
-      <li>Otwórz aplikację <b>Skróty</b>, stuknij <b>+</b> w prawym górnym rogu.</li>
-      <li>Stuknij nazwę skrótu na górze → <b>Zmień nazwę</b>, wpisz <b>Łącznik</b>.</li>
-      <li>Stuknij ikonę <b>ⓘ</b> na dole (albo strzałkę przy nazwie → <b>Szczegóły</b>), włącz <b>Pokaż w arkuszu udostępniania</b>, wróć.</li>
-      <li>Na górze pojawi się „Odbiera <b>dowolne</b> z arkusza udostępniania”. Stuknij <b>dowolne</b> i zostaw zaznaczone tylko: <b>Obrazy</b>, <b>Multimedia</b>, <b>Pliki</b>, <b>PDF</b>.</li>
-      <li>Stuknij <b>Dodaj czynność</b>, wyszukaj <b>Powtórz z każdym</b> i dodaj. Powinno tam stać „Powtórz z każdym elementem w <b>Dane wejściowe skrótu</b>”.</li>
-      <li>Do środka pętli dodaj czynność <b>Pobierz zawartość adresu URL</b> (wyszukaj „URL”). W polu adresu wklej:<div class="kopiuj-pole"><code>${esc(API)}/udostepnij</code><button class="ikb bez" data-u="kop" data-t="${esc(API)}/udostepnij" aria-label="Kopiuj adres">${ik('kopiuj')}</button></div></li>
-      <li>Rozwiń tę czynność (strzałka <b>›</b>). <b>Metoda</b>: POST. <b>Nagłówki</b>: dodaj nagłówek, klucz <b>Authorization</b>, wartość:<div class="kopiuj-pole"><code>Bearer ${esc(kluczSkrotu)}</code><button class="ikb bez" data-u="kop" data-t="Bearer ${esc(kluczSkrotu)}" aria-label="Kopiuj wartość">${ik('kopiuj')}</button></div></li>
-      <li><b>Treść żądania</b>: wybierz <b>Plik</b>, a w polu Plik wybierz zmienną <b>Powtórzony element</b>.</li>
-      <li>Pod pętlą dodaj czynność <b>Pokaż powiadomienie</b> z tekstem „Wysłano do Łącznika”. Stuknij <b>Gotowe</b>.</li>
-      <li>Sprawdź: w Zdjęciach zaznacz zdjęcie → Udostępnij → <b>Łącznik</b>. Za pierwszym razem iPhone zapyta o zgodę na połączenie, stuknij <b>Zawsze pozwalaj</b>.</li></ol>
-      <p>Linki i tekst: w dowolnej aplikacji stuknij Kopiuj, a w Łączniku przycisk <b>Wklej</b>.</p>`
-      : `<button class="p glowny" data-u="klucz" style="margin-top:6px">${ik('skrot')}Pokaż instrukcję i utwórz klucz</button>`}` : '';
   const instal = !zainstalowana ? `<h3>Ikona na ekranie</h3><p>${iOS ? 'W Safari stuknij Udostępnij (kwadrat ze strzałką), potem „Do ekranu początkowego”. Dopiero wtedy działają powiadomienia.'
     : /Android/.test(navigator.userAgent) ? 'W Chrome stuknij ⋮ w prawym górnym rogu, potem „Dodaj do ekranu głównego” → „Zainstaluj”. Wtedy Łącznik pojawi się też w menu Udostępnij.'
     : 'W Edge albo Chrome kliknij ikonę instalacji na końcu paska adresu (monitor ze strzałką) albo menu ⋯ → Aplikacje → Zainstaluj. Łącznik dostanie własne okno i ikonę na pasku zadań.'}</p>` : '';
@@ -750,7 +874,7 @@ function arkuszUstawien(odswiez = false) {
       <div class="t"><b>${pushTu ? 'Włączone na tym urządzeniu' : 'Wyłączone na tym urządzeniu'}</b><span>Gdy Łącznik jest zamknięty, dostaniesz powiadomienie o nowej rzeczy.</span></div>
       ${pushTu ? `<button class="p maly" data-u="test-push">Wyślij próbne</button>` : `<button class="p maly glowny" data-u="push">Włącz</button>`}</div>
     <h3>Urządzenia</h3>${urz}
-    ${skrot}${instal}
+    ${instal}
     <h3>To urządzenie</h3>
     <div class="wiersz-ust"><div class="t"><b>Rozłącz to urządzenie</b><span>Żeby wrócić, wpiszesz hasło jeszcze raz.</span></div><button class="p maly uwaga" data-u="wyloguj">${ik('wyloguj')}Rozłącz</button></div>
     <p style="margin-top:18px;font-size:12.5px">Łącznik ${WERSJA} · rzeczy znikają same po 14 dniach, kody po godzinie, przypięte zostają.</p>`;
@@ -789,6 +913,7 @@ function podepnijZdarzenia() {
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !dotyk && !e.isComposing) { e.preventDefault(); if (!$('#wyslij').disabled) wyslij(); } });
   $('#pisz').addEventListener('submit', (e) => { e.preventDefault(); wyslij(); });
   $('#wybor-plikow').addEventListener('change', (e) => { dodajZalaczniki([...e.target.files]); e.target.value = ''; });
+  $('#wybor-folderu').addEventListener('change', (e) => { folderZWyboru(e.target.files); e.target.value = ''; });
   const szukaj = (e) => { S.szukaj = e.target.value; S.wybrana = null; rysuj(); };
   $('#szukaj-lap').addEventListener('input', szukaj); $('#szukaj-tel').addEventListener('input', szukaj);
   app.addEventListener('click', async (e) => {
@@ -802,12 +927,15 @@ function podepnijZdarzenia() {
     if (a === 'filtr') { S.filtr = b.dataset.f; S.wybrana = null; rysuj(); window.scrollTo({ top: 0 }); }
     else if (a === 'kopiuj' && r) kopiuj(r.rodzaj === 'link' ? r.url : r.rodzaj === 'kod' ? r.tekst.trim() : r.tekst, r.rodzaj === 'kod' ? 'Kod skopiowany' : 'Skopiowano');
     else if (a === 'menu' && r) menuRzeczy(r);
+    else if (a === 'przegladaj' && b.dataset.folder) przegladaj(null, id, b.dataset.folder);
     else if (a === 'przegladaj') { if (matchMedia('(min-width: 1280px)').matches && S.wybrana !== b.dataset.grupa && b.classList.contains('mini')) { S.wybrana = b.dataset.grupa; rysujListe(); rysujPodglad(); } else przegladaj(b.dataset.grupa, id); }
     else if (a === 'zapisz') { const g = b.dataset.grupa ? grupuj(widoczneRzeczy()).find((x) => x.klucz === b.dataset.grupa) : null; zapisz(g ? g.el : r ? [r] : []); }
     else if (a === 'rozwin') { const t = b.closest('.karta').querySelector('.tresc'); t.classList.toggle('zwin'); b.textContent = t.classList.contains('zwin') ? 'Pokaż całość' : 'Zwiń'; }
     else if (a === 'przypnij' && r) { const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id)); przypnij(g?.typ === 'media' ? g.el : [r], !r.przypiete); }
     else if (a === 'usun' && r) { const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id)); usun(g?.typ === 'media' ? g.el : [r]); }
-    else if (a === 'dodaj-plik') $('#wybor-plikow').click();
+    else if (a === 'dodaj-plik') arkuszDodaj();
+    else if (a === 'pokaz-pliki') { const l = b.closest('.karta').querySelector('.lista-w-folderze'); l.classList.toggle('ukryte'); b.textContent = l.classList.contains('ukryte') ? 'Pokaż pliki' : 'Ukryj pliki'; }
+    else if (a === 'pobierz-folder' && r) pobierzFolder(r);
     else if (a === 'usun-zal') { const [z] = S.zalaczniki.splice(Number(b.dataset.i), 1); if (z?.podglad) URL.revokeObjectURL(z.podglad); odswiezPisanie(); }
     else if (a === 'wybierz-do') arkuszDo();
     else if (a === 'zmien-rodzaj') {
@@ -815,7 +943,15 @@ function podepnijZdarzenia() {
       const teraz = S.wymuszonyRodzaj || rozpoznaj(t); S.wymuszonyRodzaj = mozliwe[(mozliwe.indexOf(teraz) + 1) % mozliwe.length]; odswiezPisanie();
     }
     else if (a === 'wklej') { try { const t = await navigator.clipboard.readText(); if (t) { const ta2 = $('#tekst'); ta2.value = ta2.value ? ta2.value + '\n' + t : t; S.wymuszonyRodzaj = null; odswiezPisanie(); } } catch { $('#tekst').focus(); komunikat('Przytrzymaj pole i wybierz „Wklej”', 'wklej'); } }
-    else if (a === 'anuluj') { const w = S.wysylki.find((x) => x.lid === Number(b.dataset.lid)); if (w) { w.anulowane = true; w.xhr?.abort(); if (w.id) api(`/wysylki/${w.id}`, { metoda: 'DELETE' }).catch(() => {}); S.wysylki = S.wysylki.filter((x) => x !== w); rysujListe(); } }
+    else if (a === 'anuluj') {
+      const w = S.wysylki.find((x) => x.lid === Number(b.dataset.lid));
+      if (w) {
+        w.anulowane = true;
+        for (const x of [w, ...(w.dzieci || [])]) { x.anulowane = true; x.xhr?.abort(); if (x.id && !x.folderUp) api(`/wysylki/${x.id}`, { metoda: 'DELETE' }).catch(() => {}); }
+        if (w.folderUp && w.id) api(`/rzeczy/${w.id}`, { metoda: 'DELETE' }).catch(() => {});
+        S.wysylki = S.wysylki.filter((x) => x !== w); rysujListe();
+      }
+    }
     else if (a === 'ustawienia') arkuszUstawien();
     else if (a === 'pokaz-szukaj') { const s = $('#szukaj-tel-r'); s.classList.toggle('ukryte'); if (!s.classList.contains('ukryte')) $('#szukaj-tel').focus(); else { $('#szukaj-tel').value = ''; S.szukaj = ''; rysuj(); } }
   });
@@ -838,9 +974,31 @@ window.addEventListener('dragenter', (e) => {
 });
 window.addEventListener('dragover', (e) => { if (maPliki(e)) e.preventDefault(); });
 window.addEventListener('dragleave', (e) => { if (!maPliki(e)) return; if (--licznikPrzec <= 0) { licznikPrzec = 0; document.querySelector('.upusc')?.remove(); } });
-window.addEventListener('drop', (e) => {
+async function czytajKatalog(kat, pref) {
+  const wynik = []; const czyt = kat.createReader();
+  for (;;) {
+    const partia = await new Promise((ok, zle) => czyt.readEntries(ok, zle)); if (!partia.length) break;
+    for (const w of partia) {
+      if (w.isDirectory) wynik.push(...await czytajKatalog(w, pref + w.name + '/'));
+      else wynik.push({ plik: await new Promise((ok, zle) => w.file(ok, zle)), sciezka: pref + w.name });
+    }
+  }
+  return wynik;
+}
+window.addEventListener('drop', async (e) => {
   if (!maPliki(e)) return; e.preventDefault(); licznikPrzec = 0; document.querySelector('.upusc')?.remove();
-  if ($('#glowny')) dodajZalaczniki([...e.dataTransfer.files]);
+  if (!$('#glowny')) return;
+  const wpisy = [...(e.dataTransfer.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+  const pliki = [...e.dataTransfer.files];
+  if (!wpisy.some((w) => w.isDirectory)) return dodajZalaczniki(pliki);
+  const luzne = [];
+  for (const w of wpisy) {
+    try {
+      if (w.isDirectory) dodajFolder(w.name, await czytajKatalog(w, ''));
+      else luzne.push(await new Promise((ok, zle) => w.file(ok, zle)));
+    } catch { komunikat(`Nie udało się odczytać „${w.name}”`, 'x'); }
+  }
+  if (luzne.length) dodajZalaczniki(luzne);
 });
 matchMedia('(min-width: 1280px)').addEventListener('change', () => rysuj());
 

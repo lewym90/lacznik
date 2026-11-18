@@ -14,8 +14,10 @@
 - Na serwerze są inne aplikacje właściciela. Nigdy nie ruszać Caddyfile ani cudzych plików w conf.d. Zajęte porty m.in. 8002, 8787–8797, 18123, 18787–18789, 18871, 18890, 18900.
 - Na żywo: SSE `/na-zywo?t=TOKEN`. Pliki: wysyłka w kawałkach 8 MB z wznawianiem (`/wysylki`), miniatury robi urządzenie (canvas), serwer nie przetwarza zdjęć ani filmów. Adresy plików podpisane HMAC na urządzenie (`/plik/ID?u=&k=`), z obsługą Range (filmy).
 - Powiadomienia: własna implementacja Web Push (VAPID ES256 + aes128gcm), sprawdzona w testach biblioteką http_ece. Push nie idzie do urządzenia, które ma aplikację na ekranie.
-- Menu Udostępnij: Android/Windows przez `share_target` w manifeście (obsługa w sw.js). iPhone: Skrót iOS → POST surowego pliku na `/udostepnij` z osobnym kluczem (typ urządzenia `skrot`), instrukcja w Ustawieniach aplikacji.
+- Menu Udostępnij: Android/Windows przez `share_target` w manifeście (obsługa w sw.js). iPhone: właściciel uznał Skrót iOS za zbyt trudny, instrukcja usunięta z aplikacji (1.1.0); na iPhonie wysyła się przez „+” w Łączniku. Endpoint `/udostepnij` i `/klucz-skrotu` zostały na serwerze.
+- Foldery (1.1.0): rzecz `rodzaj='folder'` + pliki z kolumnami `folder` i `sciezka` (podfoldery), `gotowy=0` podczas wysyłania, push dopiero po `/foldery/:id/koniec`. Przypinanie i usuwanie folderu obejmuje pliki. Limit 4 GB i 5000 plików na folder. Pobieranie hybrydowe (decyzja właściciela): gdzie jest `showDirectoryPicker` (Chrome/Edge na komputerze, Chrome na Androidzie) zapis całego folderu z podfolderami; gdzie nie ma (iPhone) ZIP z `/folder-zip/:id` (bez kompresji, CRC liczone przy wysyłce, długość znana z góry).
 - Testy serwera: `node test/serwer.test.mjs` (opcjonalnie z http_ece w node_modules).
 
 ## Stan
-- 1.0.0: pierwsza wersja. Czeka na instalację serwera przez właściciela i włączenie GitHub Pages.
+- 1.0.0: pierwsza wersja, serwer zainstalowany przez właściciela.
+- 1.1.0: foldery (wysyłanie przez „+ → Cały folder” albo przeciągnięcie, jedna karta z listą plików, pobieranie folderu albo ZIP), usunięta instrukcja Skrótu iOS. Aktualizacja serwera tą samą komendą instalacyjną.

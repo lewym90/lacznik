@@ -9,9 +9,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 
-export const WERSJA = '1.0.0';
+export const WERSJA = '1.1.0';
 const PORT = Number(process.env.PORT || 18910);
 const DANE = process.env.LACZNIK_DANE || './dane';
 const ORIGINS = (process.env.LACZNIK_ORIGINS || 'https://lewym90.github.io,http://localhost:8765,http://127.0.0.1:8765').split(',');
@@ -48,6 +49,13 @@ db.exec(`
     id TEXT PRIMARY KEY, nazwa TEXT NOT NULL, mime TEXT NOT NULL, rozmiar INTEGER NOT NULL,
     od INTEGER NOT NULL, do_id INTEGER, utworzona INTEGER NOT NULL);
 `);
+// 1.1.0: foldery
+for (const sql of ['ALTER TABLE rzeczy ADD COLUMN folder TEXT', 'ALTER TABLE rzeczy ADD COLUMN sciezka TEXT', 'ALTER TABLE rzeczy ADD COLUMN crc INTEGER',
+  'ALTER TABLE rzeczy ADD COLUMN gotowy INTEGER NOT NULL DEFAULT 1', 'ALTER TABLE wysylki ADD COLUMN folder TEXT', 'ALTER TABLE wysylki ADD COLUMN sciezka TEXT']) {
+  try { db.exec(sql); } catch { /* kolumna już jest */ }
+}
+db.exec('CREATE INDEX IF NOT EXISTS rzeczy_folder ON rzeczy(folder)');
+const MAX_FOLDER = 4_000_000_000; // ZIP bez rozszerzenia ZIP64
 
 const teraz = () => Date.now();
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -168,8 +176,9 @@ function dlaKlienta(r, devId) {
   const o = {
     id: r.id, rodzaj: r.rodzaj, tekst: r.tekst, tytul: r.tytul, url: r.url, strona: r.strona,
     od: r.od, odNazwa: r.od_nazwa, odTyp: r.od_typ, do: r.do_id, utworzone: r.utworzone, wygasa: r.wygasa,
-    przypiete: !!r.przypiete, odebrane: JSON.parse(r.odebrane || '{}'),
+    przypiete: !!r.przypiete, odebrane: JSON.parse(r.odebrane || '{}'), folder: r.folder || null, sciezka: r.sciezka || null,
   };
+  if (r.rodzaj === 'folder') Object.assign(o, { nazwa: r.nazwa, rozmiar: r.rozmiar, gotowy: !!r.gotowy, zip: `/folder-zip/${r.id}?u=${devId}&k=${podpis(r.id, devId)}` });
   if (r.rodzaj === 'plik') {
     const k = podpis(r.id, devId);
     Object.assign(o, { nazwa: r.nazwa, mime: r.mime, rozmiar: r.rozmiar, szer: r.szer, wys: r.wys,
@@ -204,6 +213,7 @@ setInterval(() => {
 
 function opisPush(r) {
   if (r.rodzaj === 'kod') return 'Nowy kod';
+  if (r.rodzaj === 'folder') { const n = db.prepare('SELECT COUNT(*) AS n FROM rzeczy WHERE folder = ?').get(r.id).n; return `Folder: ${r.nazwa} (${n} ${n === 1 ? 'plik' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'pliki' : 'plików'})`; }
   if (r.rodzaj === 'link') return r.tytul || r.url;
   if (r.rodzaj === 'notatka') return (r.tekst || '').slice(0, 140);
   if (String(r.mime).startsWith('image/')) return `Zdjęcie: ${r.nazwa}`;
@@ -267,16 +277,17 @@ async function pobierzTytul(adres) {
 }
 
 // ---------- rzeczy ----------
-function dodajRzecz(r) {
-  db.prepare(`INSERT INTO rzeczy (id, rodzaj, tekst, tytul, url, strona, nazwa, mime, rozmiar, szer, wys, mini, od, od_nazwa, od_typ, do_id, utworzone, wygasa, przypiete, odebrane)
-    VALUES (:id, :rodzaj, :tekst, :tytul, :url, :strona, :nazwa, :mime, :rozmiar, :szer, :wys, :mini, :od, :od_nazwa, :od_typ, :do_id, :utworzone, :wygasa, 0, '{}')`).run({
-    tekst: null, tytul: null, url: null, strona: null, nazwa: null, mime: null, rozmiar: 0, szer: null, wys: null, mini: 0, ...r });
+function dodajRzecz(r, { cicho = false } = {}) {
+  db.prepare(`INSERT INTO rzeczy (id, rodzaj, tekst, tytul, url, strona, nazwa, mime, rozmiar, szer, wys, mini, od, od_nazwa, od_typ, do_id, utworzone, wygasa, przypiete, odebrane, folder, sciezka, crc, gotowy)
+    VALUES (:id, :rodzaj, :tekst, :tytul, :url, :strona, :nazwa, :mime, :rozmiar, :szer, :wys, :mini, :od, :od_nazwa, :od_typ, :do_id, :utworzone, :wygasa, :przypiete, '{}', :folder, :sciezka, :crc, :gotowy)`).run({
+    tekst: null, tytul: null, url: null, strona: null, nazwa: null, mime: null, rozmiar: 0, szer: null, wys: null, mini: 0, przypiete: 0, folder: null, sciezka: null, crc: null, gotowy: 1, ...r });
   const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(r.id);
-  nadajRzecz(z); powiadom(z);
+  nadajRzecz(z); if (!cicho) powiadom(z);
   if (r.rodzaj === 'plik') nadajMiejsce();
   return z;
 }
 function usunRzecz(r) {
+  if (r.rodzaj === 'folder') for (const d of db.prepare('SELECT * FROM rzeczy WHERE folder = ?').all(r.id)) usunRzecz(d);
   db.prepare('DELETE FROM rzeczy WHERE id = ?').run(r.id);
   if (r.rodzaj === 'plik') {
     fs.rm(path.join(P_PLIKI, r.id), { force: true }, () => {});
@@ -337,9 +348,64 @@ const MIME_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif:
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', zip: 'application/zip' };
 const czystaNazwaPliku = (s) => czystaNazwa(String(s || '').replace(/[\\/:*?"|]/g, '_'), 160) || 'plik';
 
+// ---------- foldery: ścieżki, CRC, ZIP ----------
+function czystaSciezka(s, nazwa) {
+  const cz = String(s || '').replace(/\\/g, '/').split('/').map((x) => x.trim()).filter((x) => x && x !== '.' && x !== '..')
+    .map((x) => czystaNazwa(x.replace(/[\\/:*?"|]/g, '_'), 160)).filter(Boolean);
+  const wynik = cz.join('/').slice(0, 500);
+  return wynik || nazwa;
+}
+function crcPliku(plik) {
+  return new Promise((ok, zle) => {
+    let c = 0;
+    fs.createReadStream(plik, { highWaterMark: 1024 * 1024 }).on('data', (d) => { c = zlib.crc32(d, c); }).on('end', () => ok(c >>> 0)).on('error', zle);
+  });
+}
+function dosCzas(t) {
+  const d = new Date(t);
+  return { czas: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
+    data: ((Math.max(1980, d.getFullYear()) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
+}
+// ZIP bez kompresji (metoda „store”), znane CRC i rozmiary, nazwy w UTF-8. Długość znana z góry.
+function wyslijZip(req, res, f, nag) {
+  const pliki = db.prepare('SELECT * FROM rzeczy WHERE folder = ? ORDER BY sciezka').all(f.id)
+    .map((r) => ({ r, nazwa: Buffer.from(`${f.nazwa}/${r.sciezka || r.nazwa}`, 'utf8'), dc: dosCzas(r.utworzone) }));
+  let dl = 22;
+  for (const x of pliki) dl += 30 + x.nazwa.length + x.r.rozmiar + 46 + x.nazwa.length;
+  res.writeHead(200, { ...nag, 'Content-Type': 'application/zip', 'Content-Length': dl, 'Cache-Control': 'no-store',
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(f.nazwa + '.zip')}` });
+  if (req.method === 'HEAD') return res.end();
+  (async () => {
+    let off = 0; const centralny = [];
+    const pisz = (b) => new Promise((ok) => { if (res.write(b)) ok(); else res.once('drain', ok); });
+    for (const x of pliki) {
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(0, 8);
+      lh.writeUInt16LE(x.dc.czas, 10); lh.writeUInt16LE(x.dc.data, 12); lh.writeUInt32LE(x.r.crc >>> 0, 14);
+      lh.writeUInt32LE(x.r.rozmiar, 18); lh.writeUInt32LE(x.r.rozmiar, 22); lh.writeUInt16LE(x.nazwa.length, 26); lh.writeUInt16LE(0, 28);
+      const ch = Buffer.alloc(46);
+      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8); ch.writeUInt16LE(0, 10);
+      ch.writeUInt16LE(x.dc.czas, 12); ch.writeUInt16LE(x.dc.data, 14); ch.writeUInt32LE(x.r.crc >>> 0, 16);
+      ch.writeUInt32LE(x.r.rozmiar, 20); ch.writeUInt32LE(x.r.rozmiar, 24); ch.writeUInt16LE(x.nazwa.length, 28);
+      ch.writeUInt32LE(off, 42);
+      centralny.push(Buffer.concat([ch, x.nazwa]));
+      await pisz(Buffer.concat([lh, x.nazwa]));
+      for await (const kaw of fs.createReadStream(path.join(P_PLIKI, x.r.id), { highWaterMark: 1024 * 1024 })) { if (res.destroyed) return; await pisz(kaw); }
+      off += 30 + x.nazwa.length + x.r.rozmiar;
+    }
+    const cd = Buffer.concat(centralny);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(pliki.length, 8); end.writeUInt16LE(pliki.length, 10);
+    end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+    await pisz(cd); res.end(end);
+  })().catch(() => { try { res.destroy(); } catch {} });
+}
+
 // ---------- sprzątanie ----------
 function sprzataj() {
   for (const r of db.prepare('SELECT * FROM rzeczy WHERE przypiete = 0 AND wygasa IS NOT NULL AND wygasa < ?').all(teraz())) usunRzecz(r);
+  for (const r of db.prepare("SELECT * FROM rzeczy WHERE rodzaj = 'folder' AND gotowy = 0 AND utworzone < ?").all(teraz() - DNI)) usunRzecz(r);
+  for (const r of db.prepare("SELECT * FROM rzeczy WHERE folder IS NOT NULL AND folder NOT IN (SELECT id FROM rzeczy WHERE rodzaj = 'folder')").all()) usunRzecz(r);
   for (const w of db.prepare('SELECT * FROM wysylki WHERE utworzona < ?').all(teraz() - DNI)) {
     db.prepare('DELETE FROM wysylki WHERE id = ?').run(w.id); fs.rm(path.join(P_TMP, w.id), { force: true }, () => {});
   }
@@ -436,6 +502,16 @@ async function obsluz(req, res) {
     if (mp[1] === 'miniatura') return wyslijPlik(req, res, path.join(P_MINI, r.id + '.jpg'), 'image/jpeg', null, false, nag);
     return wyslijPlik(req, res, path.join(P_PLIKI, r.id), r.mime, r.nazwa, u.searchParams.get('pobierz') === '1', nag);
   }
+  const mz = /^\/folder-zip\/([A-Za-z0-9_-]{6,20})$/.exec(p);
+  if (mz && (req.method === 'GET' || req.method === 'HEAD')) {
+    const devId = Number(u.searchParams.get('u'));
+    const k = String(u.searchParams.get('k') || '');
+    const ok = k.length === 32 && crypto.timingSafeEqual(Buffer.from(k), Buffer.from(podpis(mz[1], devId)));
+    const dev = ok && db.prepare('SELECT id FROM urzadzenia WHERE id = ?').get(devId);
+    const f = dev && db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'folder'").get(mz[1]);
+    if (!f || !widoczna(f, devId)) return send(404, { blad: 'Nie ma takiego folderu.' });
+    return wyslijZip(req, res, f, nag);
+  }
 
   // na żywo — EventSource nie wysyła nagłówków, więc token w adresie
   if (p === '/na-zywo' && req.method === 'GET') {
@@ -487,7 +563,8 @@ async function obsluz(req, res) {
       const b = await czytajJSON(req);
       if (typeof b.przypiete === 'boolean') {
         const wyg = b.przypiete ? null : teraz() + (r.rodzaj === 'kod' ? ZYCIE_KOD : ZYCIE);
-        db.prepare('UPDATE rzeczy SET przypiete = ?, wygasa = ? WHERE id = ?').run(b.przypiete ? 1 : 0, wyg, r.id);
+        db.prepare('UPDATE rzeczy SET przypiete = ?, wygasa = ? WHERE id = ? OR folder = ?').run(b.przypiete ? 1 : 0, wyg, r.id, r.id);
+        if (r.rodzaj === 'folder') for (const d of db.prepare('SELECT * FROM rzeczy WHERE folder = ?').all(r.id)) nadajRzecz(d);
       }
       const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(r.id);
       nadajRzecz(z);
@@ -507,7 +584,14 @@ async function obsluz(req, res) {
     const nazwa = czystaNazwaPliku(b.nazwa);
     const ext = nazwa.split('.').pop().toLowerCase();
     const mime = /^[\w.+-]+\/[\w.+-]+$/.test(String(b.mime || '')) ? String(b.mime) : (MIME_EXT[ext] || 'application/octet-stream');
-    db.prepare('INSERT INTO wysylki (id, nazwa, mime, rozmiar, od, do_id, utworzona) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, nazwa, mime, rozmiar, dev.id, adresDo(dev, b.do), teraz());
+    let folder = null, sciezka = null;
+    if (b.folder) {
+      const f = db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'folder' AND od = ? AND gotowy = 0").get(String(b.folder), dev.id);
+      if (!f) return send(404, { blad: 'Folder nie istnieje albo jest już zamknięty.' });
+      folder = f.id; sciezka = czystaSciezka(b.sciezka, nazwa);
+    }
+    db.prepare('INSERT INTO wysylki (id, nazwa, mime, rozmiar, od, do_id, utworzona, folder, sciezka) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, nazwa, mime, rozmiar, dev.id, folder ? db.prepare('SELECT do_id FROM rzeczy WHERE id = ?').get(folder).do_id : adresDo(dev, b.do), teraz(), folder, sciezka);
     fs.writeFileSync(path.join(P_TMP, id), '');
     return send(200, { id, kawalek: KAWALEK, odebrano: 0 });
   }
@@ -536,14 +620,44 @@ async function obsluz(req, res) {
       let mini = 0;
       const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(b.miniatura || ''));
       if (m && m[1].length < 600000) { fs.writeFileSync(path.join(P_MINI, id + '.jpg'), Buffer.from(m[1], 'base64')); mini = 1; }
-      fs.renameSync(tmp, path.join(P_PLIKI, id));
+      const cel = path.join(P_PLIKI, id);
+      fs.renameSync(tmp, cel);
       db.prepare('DELETE FROM wysylki WHERE id = ?').run(w.id);
       const t = teraz();
+      const f = w.folder ? db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(w.folder) : null;
+      if (w.folder && !f) { fs.rm(cel, { force: true }, () => {}); return send(404, { blad: 'Folder został usunięty.' }); }
       const r = dodajRzecz({ id, rodzaj: 'plik', nazwa: w.nazwa, mime: w.mime, rozmiar: w.rozmiar,
         szer: Number.isFinite(+b.szer) ? Math.round(+b.szer) : null, wys: Number.isFinite(+b.wys) ? Math.round(+b.wys) : null, mini,
-        od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: w.do_id, utworzone: t, wygasa: t + ZYCIE });
+        od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: w.do_id, utworzone: t, wygasa: f ? f.wygasa : t + ZYCIE, przypiete: f ? f.przypiete : 0,
+        folder: f ? f.id : null, sciezka: f ? w.sciezka : null, crc: f ? await crcPliku(cel) : null }, { cicho: !!f });
       return send(200, dlaKlienta(r, dev.id));
     }
+  }
+
+  // ----- foldery -----
+  if (p === '/foldery' && req.method === 'POST') {
+    const b = await czytajJSON(req);
+    const rozmiar = Math.floor(Number(b.rozmiar)), liczba = Math.floor(Number(b.liczba));
+    if (!(rozmiar > 0) || !(liczba > 0)) return send(400, { blad: 'Pusty folder.' });
+    if (liczba > 5000) return send(413, { blad: 'Za dużo plików w folderze (maks. 5000).' });
+    if (rozmiar > MAX_FOLDER) return send(507, { blad: 'Folder jest za duży. Limit to 4 GB na jeden folder.' });
+    const brak = czyMiejsce(Math.min(rozmiar, MAX_PLIK));
+    if (brak || uzyte() + rozmiar > LIMIT) return send(507, { blad: brak || `Brak miejsca w Łączniku (limit ${Math.round(LIMIT / GB)} GB). Usuń coś albo poczekaj, aż stare rzeczy znikną.` });
+    const t = teraz();
+    const r = dodajRzecz({ id: losowe(9), rodzaj: 'folder', nazwa: czystaNazwaPliku(b.nazwa) || 'Folder', rozmiar, od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ,
+      do_id: adresDo(dev, b.do), utworzone: t, wygasa: t + ZYCIE, gotowy: 0 }, { cicho: true });
+    return send(200, dlaKlienta(r, dev.id));
+  }
+  const mf = /^\/foldery\/([A-Za-z0-9_-]{6,20})\/koniec$/.exec(p);
+  if (mf && req.method === 'POST') {
+    const f = db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'folder' AND od = ?").get(mf[1], dev.id);
+    if (!f) return send(404, { blad: 'Nie ma takiego folderu.' });
+    const suma = db.prepare('SELECT COALESCE(SUM(rozmiar),0) AS s, COUNT(*) AS n FROM rzeczy WHERE folder = ?').get(f.id);
+    if (!suma.n) { usunRzecz(f); return send(400, { blad: 'Żaden plik z folderu nie dotarł.' }); }
+    db.prepare('UPDATE rzeczy SET gotowy = 1, rozmiar = ? WHERE id = ?').run(suma.s, f.id);
+    const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(f.id);
+    nadajRzecz(z); if (!f.gotowy) powiadom(z); nadajMiejsce();
+    return send(200, dlaKlienta(z, dev.id));
   }
 
   // ----- Skrót iOS: surowe dane w treści żądania (plik albo tekst) -----
