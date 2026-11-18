@@ -12,7 +12,7 @@ import net from 'node:net';
 import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 
-export const WERSJA = '1.1.0';
+export const WERSJA = '1.2.0';
 const PORT = Number(process.env.PORT || 18910);
 const DANE = process.env.LACZNIK_DANE || './dane';
 const ORIGINS = (process.env.LACZNIK_ORIGINS || 'https://lewym90.github.io,http://localhost:8765,http://127.0.0.1:8765').split(',');
@@ -366,40 +366,108 @@ function dosCzas(t) {
   return { czas: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
     data: ((Math.max(1980, d.getFullYear()) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
 }
-// ZIP bez kompresji (metoda „store”), znane CRC i rozmiary, nazwy w UTF-8. Długość znana z góry.
-function wyslijZip(req, res, f, nag) {
-  const pliki = db.prepare('SELECT * FROM rzeczy WHERE folder = ? ORDER BY sciezka').all(f.id)
-    .map((r) => ({ r, nazwa: Buffer.from(`${f.nazwa}/${r.sciezka || r.nazwa}`, 'utf8'), dc: dosCzas(r.utworzone) }));
+// ---------- szyfrowanie ZIP ----------
+// „zgodny” = klasyczne szyfrowanie ZIP (ZipCrypto), otwiera się w Eksploratorze Windows.
+// „mocny” = AES-256 w formacie WinZip AE-2 (7-Zip, aplikacje do ZIP na telefonie).
+const TAB_CRC = new Int32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c; });
+class ZipCrypto {
+  constructor(haslo) { this.k0 = 305419896; this.k1 = 591751049; this.k2 = 878082192; for (const b of Buffer.from(haslo, 'utf8')) this.akt(b); }
+  akt(b) {
+    this.k0 = TAB_CRC[(this.k0 ^ b) & 0xff] ^ (this.k0 >>> 8);
+    this.k1 = (Math.imul((this.k1 + (this.k0 & 0xff)) | 0, 134775813) + 1) | 0;
+    this.k2 = TAB_CRC[(this.k2 ^ (this.k1 >>> 24)) & 0xff] ^ (this.k2 >>> 8);
+  }
+  szyfruj(buf) {
+    const out = Buffer.allocUnsafe(buf.length);
+    let k0 = this.k0, k1 = this.k1, k2 = this.k2;
+    for (let i = 0; i < buf.length; i++) {
+      const t = (k2 | 2) & 0xffff, p = buf[i];
+      out[i] = p ^ ((Math.imul(t, t ^ 1) >>> 8) & 0xff);
+      k0 = TAB_CRC[(k0 ^ p) & 0xff] ^ (k0 >>> 8);
+      k1 = (Math.imul((k1 + (k0 & 0xff)) | 0, 134775813) + 1) | 0;
+      k2 = TAB_CRC[(k2 ^ (k1 >>> 24)) & 0xff] ^ (k2 >>> 8);
+    }
+    this.k0 = k0; this.k1 = k1; this.k2 = k2;
+    return out;
+  }
+}
+class ZipAES {
+  constructor(haslo) {
+    this.sol = crypto.randomBytes(16);
+    const k = crypto.pbkdf2Sync(Buffer.from(haslo, 'utf8'), this.sol, 1000, 66, 'sha1');
+    this.ecb = crypto.createCipheriv('aes-256-ecb', k.subarray(0, 32), null); this.ecb.setAutoPadding(false);
+    this.mac = crypto.createHmac('sha1', k.subarray(32, 64));
+    this.weryf = k.subarray(64, 66);
+    this.licznik = 1n; this.reszta = Buffer.alloc(0);
+  }
+  strumien(n) { // n bajtów strumienia klucza (licznik little-endian od 1, jak w WinZip)
+    const bloki = Math.ceil(n / 16), b = Buffer.alloc(bloki * 16);
+    for (let i = 0; i < bloki; i++) b.writeBigUInt64LE(this.licznik++, i * 16);
+    return this.ecb.update(b);
+  }
+  szyfruj(buf) {
+    let ks = this.reszta;
+    if (ks.length < buf.length) ks = Buffer.concat([ks, this.strumien(buf.length - ks.length)]);
+    const out = Buffer.allocUnsafe(buf.length);
+    for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ ks[i];
+    this.reszta = ks.subarray(buf.length);
+    this.mac.update(out);
+    return out;
+  }
+}
+const NAD_SZYFR = { brak: 0, zgodny: 12, mocny: 16 + 2 + 10 };
+
+// ZIP bez kompresji (metoda „store”), znane CRC i rozmiary, nazwy w UTF-8, długość znana z góry.
+// wpisy: [{ r, nazwa }]; tryb: 'brak' | 'zgodny' | 'mocny'
+function wyslijZip(req, res, nazwaZip, wpisy, nag, tryb = 'brak', haslo = '') {
+  const lista = wpisy.map((x) => ({ ...x, nb: Buffer.from(x.nazwa, 'utf8'), dc: dosCzas(x.r.utworzone) }));
+  const dod = NAD_SZYFR[tryb], ext = tryb === 'mocny' ? 11 : 0;
   let dl = 22;
-  for (const x of pliki) dl += 30 + x.nazwa.length + x.r.rozmiar + 46 + x.nazwa.length;
+  for (const x of lista) dl += 30 + x.nb.length + ext + x.r.rozmiar + dod + 46 + x.nb.length + ext;
   res.writeHead(200, { ...nag, 'Content-Type': 'application/zip', 'Content-Length': dl, 'Cache-Control': 'no-store',
-    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(f.nazwa + '.zip')}` });
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(nazwaZip)}` });
   if (req.method === 'HEAD') return res.end();
   (async () => {
     let off = 0; const centralny = [];
     const pisz = (b) => new Promise((ok) => { if (res.write(b)) ok(); else res.once('drain', ok); });
-    for (const x of pliki) {
+    for (const x of lista) {
+      const flagi = 0x0800 | (tryb !== 'brak' ? 1 : 0), metoda = tryb === 'mocny' ? 99 : 0, wersja = tryb === 'mocny' ? 51 : 20;
+      const crc = tryb === 'mocny' ? 0 : x.r.crc >>> 0, wSkr = x.r.rozmiar + dod;
+      const extra = Buffer.alloc(ext);
+      if (ext) { extra.writeUInt16LE(0x9901, 0); extra.writeUInt16LE(7, 2); extra.writeUInt16LE(2, 4); extra.write('AE', 6, 'latin1'); extra.writeUInt8(3, 8); extra.writeUInt16LE(0, 9); }
       const lh = Buffer.alloc(30);
-      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(0, 8);
-      lh.writeUInt16LE(x.dc.czas, 10); lh.writeUInt16LE(x.dc.data, 12); lh.writeUInt32LE(x.r.crc >>> 0, 14);
-      lh.writeUInt32LE(x.r.rozmiar, 18); lh.writeUInt32LE(x.r.rozmiar, 22); lh.writeUInt16LE(x.nazwa.length, 26); lh.writeUInt16LE(0, 28);
+      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(wersja, 4); lh.writeUInt16LE(flagi, 6); lh.writeUInt16LE(metoda, 8);
+      lh.writeUInt16LE(x.dc.czas, 10); lh.writeUInt16LE(x.dc.data, 12); lh.writeUInt32LE(crc, 14);
+      lh.writeUInt32LE(wSkr, 18); lh.writeUInt32LE(x.r.rozmiar, 22); lh.writeUInt16LE(x.nb.length, 26); lh.writeUInt16LE(ext, 28);
       const ch = Buffer.alloc(46);
-      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8); ch.writeUInt16LE(0, 10);
-      ch.writeUInt16LE(x.dc.czas, 12); ch.writeUInt16LE(x.dc.data, 14); ch.writeUInt32LE(x.r.crc >>> 0, 16);
-      ch.writeUInt32LE(x.r.rozmiar, 20); ch.writeUInt32LE(x.r.rozmiar, 24); ch.writeUInt16LE(x.nazwa.length, 28);
+      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(wersja, 4); ch.writeUInt16LE(wersja, 6); ch.writeUInt16LE(flagi, 8); ch.writeUInt16LE(metoda, 10);
+      ch.writeUInt16LE(x.dc.czas, 12); ch.writeUInt16LE(x.dc.data, 14); ch.writeUInt32LE(crc, 16);
+      ch.writeUInt32LE(wSkr, 20); ch.writeUInt32LE(x.r.rozmiar, 24); ch.writeUInt16LE(x.nb.length, 28); ch.writeUInt16LE(ext, 30);
       ch.writeUInt32LE(off, 42);
-      centralny.push(Buffer.concat([ch, x.nazwa]));
-      await pisz(Buffer.concat([lh, x.nazwa]));
-      for await (const kaw of fs.createReadStream(path.join(P_PLIKI, x.r.id), { highWaterMark: 1024 * 1024 })) { if (res.destroyed) return; await pisz(kaw); }
-      off += 30 + x.nazwa.length + x.r.rozmiar;
+      centralny.push(Buffer.concat([ch, x.nb, extra]));
+      await pisz(Buffer.concat([lh, x.nb, extra]));
+      let szyfr = null;
+      if (tryb === 'zgodny') { szyfr = new ZipCrypto(haslo); const nag12 = crypto.randomBytes(12); nag12[11] = (x.r.crc >>> 24) & 0xff; await pisz(szyfr.szyfruj(nag12)); }
+      if (tryb === 'mocny') { szyfr = new ZipAES(haslo); await pisz(Buffer.concat([szyfr.sol, szyfr.weryf])); }
+      for await (const kaw of fs.createReadStream(path.join(P_PLIKI, x.r.id), { highWaterMark: 1024 * 1024 })) {
+        if (res.destroyed) return;
+        await pisz(szyfr ? szyfr.szyfruj(kaw) : kaw);
+      }
+      if (tryb === 'mocny') await pisz(szyfr.mac.digest().subarray(0, 10));
+      off += 30 + x.nb.length + ext + wSkr;
     }
     const cd = Buffer.concat(centralny);
     const end = Buffer.alloc(22);
-    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(pliki.length, 8); end.writeUInt16LE(pliki.length, 10);
+    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(lista.length, 8); end.writeUInt16LE(lista.length, 10);
     end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
     await pisz(cd); res.end(end);
   })().catch(() => { try { res.destroy(); } catch {} });
 }
+const wpisyFolderu = (f) => db.prepare('SELECT * FROM rzeczy WHERE folder = ? ORDER BY sciezka').all(f.id).map((r) => ({ r, nazwa: `${f.nazwa}/${r.sciezka || r.nazwa}` }));
+
+// zlecenia zaszyfrowanego ZIP-a: hasło tylko w pamięci, najwyżej 10 minut
+const zlecenia = new Map();
+setInterval(() => { for (const [k, z] of zlecenia) if (z.wygasa < teraz()) zlecenia.delete(k); }, 60e3).unref();
 
 // ---------- sprzątanie ----------
 function sprzataj() {
@@ -502,6 +570,23 @@ async function obsluz(req, res) {
     if (mp[1] === 'miniatura') return wyslijPlik(req, res, path.join(P_MINI, r.id + '.jpg'), 'image/jpeg', null, false, nag);
     return wyslijPlik(req, res, path.join(P_PLIKI, r.id), r.mime, r.nazwa, u.searchParams.get('pobierz') === '1', nag);
   }
+  const mzs = /^\/zip-szyfrowany\/([A-Za-z0-9_-]{20,64})$/.exec(p);
+  if (mzs && (req.method === 'GET' || req.method === 'HEAD')) {
+    const z = zlecenia.get(mzs[1]);
+    if (!z || z.wygasa < teraz() || !db.prepare('SELECT 1 FROM urzadzenia WHERE id = ?').get(z.dev)) return send(404, { blad: 'Link wygasł. Zaszyfruj jeszcze raz.' });
+    const wpisy = [];
+    for (const id of z.ids) {
+      const r = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id);
+      if (!r || !widoczna(r, z.dev)) continue;
+      if (r.rodzaj === 'folder') wpisy.push(...wpisyFolderu(r)); else if (r.rodzaj === 'plik') wpisy.push({ r, nazwa: r.nazwa });
+    }
+    if (!wpisy.length) return send(404, { blad: 'Tych plików już nie ma.' });
+    // brakujące CRC (pliki sprzed wersji 1.2.0) liczymy teraz
+    for (const w of wpisy) if (w.r.crc == null) { w.r.crc = await crcPliku(path.join(P_PLIKI, w.r.id)); db.prepare('UPDATE rzeczy SET crc = ? WHERE id = ?').run(w.r.crc, w.r.id); }
+    const zajete = new Set();
+    for (const w of wpisy) { let n = w.nazwa, i = 2; while (zajete.has(n)) n = w.nazwa.replace(/(\.[^./]+)?$/, ` (${i++})$1`); zajete.add(n); w.nazwa = n; }
+    return wyslijZip(req, res, z.nazwa, wpisy, nag, z.tryb, z.haslo);
+  }
   const mz = /^\/folder-zip\/([A-Za-z0-9_-]{6,20})$/.exec(p);
   if (mz && (req.method === 'GET' || req.method === 'HEAD')) {
     const devId = Number(u.searchParams.get('u'));
@@ -510,7 +595,7 @@ async function obsluz(req, res) {
     const dev = ok && db.prepare('SELECT id FROM urzadzenia WHERE id = ?').get(devId);
     const f = dev && db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'folder'").get(mz[1]);
     if (!f || !widoczna(f, devId)) return send(404, { blad: 'Nie ma takiego folderu.' });
-    return wyslijZip(req, res, f, nag);
+    return wyslijZip(req, res, f.nazwa + '.zip', wpisyFolderu(f), nag);
   }
 
   // na żywo — EventSource nie wysyła nagłówków, więc token w adresie
@@ -629,9 +714,28 @@ async function obsluz(req, res) {
       const r = dodajRzecz({ id, rodzaj: 'plik', nazwa: w.nazwa, mime: w.mime, rozmiar: w.rozmiar,
         szer: Number.isFinite(+b.szer) ? Math.round(+b.szer) : null, wys: Number.isFinite(+b.wys) ? Math.round(+b.wys) : null, mini,
         od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: w.do_id, utworzone: t, wygasa: f ? f.wygasa : t + ZYCIE, przypiete: f ? f.przypiete : 0,
-        folder: f ? f.id : null, sciezka: f ? w.sciezka : null, crc: f ? await crcPliku(cel) : null }, { cicho: !!f });
+        folder: f ? f.id : null, sciezka: f ? w.sciezka : null, crc: await crcPliku(cel) }, { cicho: !!f });
       return send(200, dlaKlienta(r, dev.id));
     }
+  }
+
+  // ----- zaszyfrowany ZIP -----
+  if (p === '/zip-szyfrowany' && req.method === 'POST') {
+    const b = await czytajJSON(req);
+    const haslo = String(b.haslo || '');
+    if (haslo.length < 4 || haslo.length > 200) return send(400, { blad: 'Hasło musi mieć od 4 do 200 znaków.' });
+    const tryb = b.tryb === 'zgodny' ? 'zgodny' : 'mocny';
+    const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].slice(0, 500);
+    const rz = ids.map((id) => db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id)).filter((r) => r && widoczna(r, dev.id) && (r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy)));
+    if (!rz.length) return send(404, { blad: 'Nie ma czego spakować.' });
+    let suma = 0;
+    for (const r of rz) suma += r.rodzaj === 'folder' ? db.prepare('SELECT COALESCE(SUM(rozmiar),0) AS s FROM rzeczy WHERE folder = ?').get(r.id).s : r.rozmiar;
+    if (suma > MAX_FOLDER) return send(413, { blad: 'Za dużo naraz. Zaszyfrowany ZIP może mieć najwyżej 4 GB.' });
+    const d = new Date(), z2 = (x) => String(x).padStart(2, '0');
+    const baza = rz.length === 1 ? (rz[0].rodzaj === 'folder' ? rz[0].nazwa : rz[0].nazwa.replace(/\.[^.]+$/, '')) : `Łącznik ${d.getFullYear()}-${z2(d.getMonth() + 1)}-${z2(d.getDate())}`;
+    const id = losowe(24);
+    zlecenia.set(id, { ids: rz.map((r) => r.id), haslo, tryb, dev: dev.id, nazwa: `${baza} (zaszyfrowany).zip`, wygasa: teraz() + 10 * 60e3 });
+    return send(200, { url: `/zip-szyfrowany/${id}`, nazwa: `${baza} (zaszyfrowany).zip`, rozmiar: suma });
   }
 
   // ----- foldery -----

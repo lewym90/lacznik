@@ -18,6 +18,9 @@
 - Foldery (1.1.0): rzecz `rodzaj='folder'` + pliki z kolumnami `folder` i `sciezka` (podfoldery), `gotowy=0` podczas wysyłania, push dopiero po `/foldery/:id/koniec`. Przypinanie i usuwanie folderu obejmuje pliki. Limit 4 GB i 5000 plików na folder. Pobieranie hybrydowe (decyzja właściciela): gdzie jest `showDirectoryPicker` (Chrome/Edge na komputerze, Chrome na Androidzie) zapis całego folderu z podfolderami; gdzie nie ma (iPhone) ZIP z `/folder-zip/:id` (bez kompresji, CRC liczone przy wysyłce, długość znana z góry).
 - Testy serwera: `node test/serwer.test.mjs` (opcjonalnie z http_ece w node_modules).
 
+- Zaszyfrowany ZIP (1.2.0): menu „…” → „Zaszyfruj i pobierz” dla pliku, grupy zdjęć albo folderu. Tryby nazwane przez właściciela: „Mocny” (AES-256, WinZip AE-2: PBKDF2-SHA1 1000, AES-CTR z licznikiem LE, HMAC-SHA1 10 B) i „Zgodny ze wszystkimi urządzeniami” (ZipCrypto, otwiera Eksplorator Windows). POST /zip-szyfrowany tworzy zlecenie w pamięci (hasło nigdzie niezapisywane, 10 min), GET /zip-szyfrowany/:id strumieniuje ZIP. CRC liczone przy każdej wysyłce pliku (stare pliki: przy pierwszym szyfrowaniu). Maks. 4 GB. Testy: zipfile (ZipCrypto) i pyzipper (AES).
+
 ## Stan
 - 1.0.0: pierwsza wersja, serwer zainstalowany przez właściciela.
+- 1.2.0: zaszyfrowany ZIP (mocny / zgodny ze wszystkimi urządzeniami).
 - 1.1.0: foldery (wysyłanie przez „+ → Cały folder” albo przeciągnięcie, jedna karta z listą plików, pobieranie folderu albo ZIP), usunięta instrukcja Skrótu iOS. Aktualizacja serwera tą samą komendą instalacyjną.

@@ -1,5 +1,5 @@
 // Łącznik — aplikacja. Bez bibliotek.
-const WERSJA = '1.1.0';
+const WERSJA = '1.2.0';
 const API = (localStorage.getItem('lacznik.api') || 'https://188-68-247-201.sslip.io/lacznik-api').replace(/\/+$/, '');
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
@@ -35,7 +35,7 @@ const SCIEZKI = {
   kosz: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', zegar: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   wgore: '<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>', siatka: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   ustawienia: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
-  x: '<path d="M6 6l12 12M18 6L6 18"/>', folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', wiecej: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>', klodka: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', tarcza: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>', folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', wiecej: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
   dzwonek: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>', oko: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   otworz: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>', lewo: '<path d="M15 6l-6 6 6 6"/>', prawo: '<path d="M9 6l6 6-6 6"/>',
   wklej: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6"/>', wszystkie: '<rect x="2" y="6" width="9" height="12" rx="2"/><rect x="13" y="4" width="9" height="16" rx="2"/>',
@@ -423,7 +423,7 @@ function rysujPodglad() {
   }
   const odeb = Object.entries(g.el.reduce((a, x) => Object.assign(a, x.odebrane || {}), {})).map(([id, t]) => `${esc(nazwaUrz(Number(id)))} ${gg(new Date(t))}`).join(' · ');
   p.innerHTML = `<div class="etyk">Podgląd</div>${duzy}<div class="nazwa">${nazwa}</div>${r.rodzaj === 'plik' ? `<div class="meta">${rozmiar(g.el.reduce((a, x) => a + x.rozmiar, 0))}</div>` : ''}
-    <div class="akcje">${akcje}<button class="p" data-a="przypnij" data-id="${r.id}">${ik('pinezka')}${r.przypiete ? 'Odepnij' : 'Przypnij'}</button>
+    <div class="akcje">${akcje}${r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy) ? `<button class="p" data-a="szyfruj" data-id="${r.id}">${ik('klodka')}Zaszyfruj</button>` : ''}<button class="p" data-a="przypnij" data-id="${r.id}">${ik('pinezka')}${r.przypiete ? 'Odepnij' : 'Przypnij'}</button>
     <button class="p uwaga" data-a="usun" data-id="${r.id}">${ik('kosz')}Usuń</button></div>
     <div class="fakty"><div class="fakt"><span>Od</span><span>${esc(r.odNazwa)} · ${gg(new Date(r.utworzone))}</span></div>
     <div class="fakt"><span>Do</span><span>${esc(r.do == null ? 'Wszystkie urządzenia' : nazwaUrz(r.do))}</span></div>
@@ -779,6 +779,50 @@ function potwierdz(tytul, tekst, przycisk) {
     z.addEventListener('click', (e) => { const w = e.target.closest('[data-w]')?.dataset.w; if (w) { wynik = w === 'tak'; z._zamknij(); } });
   });
 }
+let trybSzyfru = localStorage.getItem('lacznik.szyfr') === 'zgodny' ? 'zgodny' : 'mocny';
+function arkuszSzyfruj(el) {
+  const tytul = el.length === 1 ? (el[0].rodzaj === 'folder' ? el[0].nazwa : el[0].nazwa) : opisMediow(el);
+  const opcja = (t, nazwa, opis, znak) => `<button type="button" class="op" role="radio" data-t="${t}" aria-checked="${trybSzyfru === t}">
+    <span class="znaczek">${ik(znak)}</span><span class="t"><b>${nazwa}</b><span>${opis}</span></span>${trybSzyfru === t ? `<span class="ptaszek">${ik('ok')}</span>` : ''}</button>`;
+  const z = arkusz(`<h2>Zaszyfruj i pobierz</h2><p>${esc(tytul)} → jeden plik ZIP zabezpieczony hasłem.</p>
+    <form id="f-szyfr" novalidate style="display:flex;flex-direction:column;gap:14px;margin-top:14px">
+      <div class="pole"><label for="sz-h1">Hasło do ZIP-a</label><div class="wej-z-ik"><input class="wej" id="sz-h1" type="password" autocomplete="new-password" minlength="4">
+        <button type="button" class="ikb bez" data-s="pokaz" aria-label="Pokaż hasło">${ik('oko')}</button></div></div>
+      <div class="pole"><label for="sz-h2">Powtórz hasło</label><input class="wej" id="sz-h2" type="password" autocomplete="new-password"></div>
+      <div class="lista-op" role="radiogroup" aria-label="Rodzaj szyfrowania" id="sz-tryby">
+        ${opcja('mocny', 'Mocny', 'Bardzo silne szyfrowanie AES-256. Na komputerze otworzysz go darmowym 7-Zip, na telefonie aplikacją do ZIP-ów.', 'tarcza')}
+        ${opcja('zgodny', 'Zgodny ze wszystkimi urządzeniami', 'Otworzysz go w Windows bez instalowania programów. Słabsze zabezpieczenie.', 'klodka')}
+      </div>
+      <div id="sz-blad"></div>
+      <button class="p glowny" type="submit" id="sz-ok" style="height:50px">${ik('klodka')}Zaszyfruj i pobierz</button>
+      <p style="font-size:13px;margin:0">Łącznik nie zapamiętuje tego hasła. Bez niego nie otworzysz pliku.</p>
+    </form>`);
+  setTimeout(() => $('#sz-h1')?.focus(), 50);
+  z.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-t]')?.dataset.t;
+    if (t) {
+      trybSzyfru = t; localStorage.setItem('lacznik.szyfr', t);
+      z.querySelectorAll('#sz-tryby .op').forEach((o) => { const on = o.dataset.t === t; o.setAttribute('aria-checked', on); o.querySelector('.ptaszek')?.remove(); if (on) o.insertAdjacentHTML('beforeend', `<span class="ptaszek">${ik('ok')}</span>`); });
+    }
+    if (e.target.closest('[data-s="pokaz"]')) { for (const id of ['#sz-h1', '#sz-h2']) { const i = $(id); i.type = i.type === 'password' ? 'text' : 'password'; } }
+  });
+  $('#f-szyfr').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const h1 = $('#sz-h1').value, h2 = $('#sz-h2').value, blad = (m) => { $('#sz-blad').innerHTML = `<div class="blad" role="alert">${esc(m)}</div>`; };
+    if (h1.length < 4) return blad('Hasło musi mieć co najmniej 4 znaki.');
+    if (h1 !== h2) return blad('Hasła się różnią.');
+    const b = $('#sz-ok'); b.disabled = true; b.textContent = 'Przygotowuję…';
+    try {
+      const odp = await api('/zip-szyfrowany', { metoda: 'POST', json: { ids: el.map((x) => x.id), haslo: h1, tryb: trybSzyfru } });
+      const a = document.createElement('a'); a.href = url(odp.url); a.download = odp.nazwa; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove();
+      const ark = z.querySelector('.arkusz');
+      ark.innerHTML = `<div class="uchwyt"></div><button class="ikb bez zamknij" data-a="zamknij-ark" aria-label="Zamknij">${ik('x')}</button>
+        <h2>Pobieranie ruszyło</h2><p>${esc(odp.nazwa)} · ${rozmiar(odp.rozmiar)} · ${trybSzyfru === 'mocny' ? 'szyfrowanie mocne' : 'szyfrowanie zgodne'}</p>
+        <a class="p glowny" href="${esc(url(odp.url))}" download="${esc(odp.nazwa)}" style="margin-top:14px;height:50px;width:100%">${ik('pobierz')}Jeśli nie ruszyło, stuknij tutaj</a>
+        <p style="font-size:13px">Link działa przez 10 minut. Hasło znasz tylko Ty.</p>`;
+    } catch (er) { b.disabled = false; b.innerHTML = `${ik('klodka')}Zaszyfruj i pobierz`; blad(er.message); }
+  });
+}
 function arkuszDodaj() {
   const z = arkusz(`<h2>Dodaj</h2><div class="lista-op" style="margin-top:12px">
     <button class="op" data-d="pliki"><span class="znaczek">${ik('foto')}</span><span class="t"><b>Zdjęcia i pliki</b><span>Jedno albo wiele naraz</span></span></button>
@@ -810,6 +854,7 @@ function menuRzeczy(r, poAkcji) {
       ${tekst ? `<button class="op" data-m="kopiuj"><span class="znaczek">${ik('kopiuj')}</span><span class="t"><b>Kopiuj</b></span></button>` : ''}
       ${r.rodzaj === 'folder' && r.gotowy ? `<button class="op" data-m="folder"><span class="znaczek">${ik('pobierz')}</span><span class="t"><b>Pobierz folder</b><span>${opisFolderu(r)}${umieFolder() ? '' : ' · jako ZIP'}</span></span></button>` : ''}
       ${r.rodzaj === 'plik' ? `<button class="op" data-m="zapisz"><span class="znaczek">${ik(iOS ? 'udostepnij' : 'pobierz')}</span><span class="t"><b>${iOS ? 'Zapisz lub udostępnij' : 'Pobierz'}</b><span>${rozmiar(el.reduce((a, x) => a + x.rozmiar, 0))}</span></span></button>` : ''}
+      ${(r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy)) ? `<button class="op" data-m="szyfruj"><span class="znaczek">${ik('klodka')}</span><span class="t"><b>Zaszyfruj i pobierz</b><span>ZIP zabezpieczony hasłem</span></span></button>` : ''}
       <button class="op" data-m="przypnij"><span class="znaczek">${ik('pinezka')}</span><span class="t"><b>${r.przypiete ? 'Odepnij' : 'Przypnij'}</b><span>${r.przypiete ? 'Wróci do zwykłego znikania' : 'Zostanie na stałe, nie zniknie sama'}</span></span></button>
       <button class="op" data-m="usun" style="color:var(--czerwony)"><span class="znaczek" style="color:var(--czerwony)">${ik('kosz')}</span><span class="t"><b>Usuń ze wszystkich urządzeń</b>${r.rodzaj === 'folder' ? `<span>Razem ze wszystkimi plikami w środku</span>` : ''}</span></button>
     </div>`);
@@ -819,6 +864,7 @@ function menuRzeczy(r, poAkcji) {
     if (m === 'kopiuj') kopiuj(tekst);
     if (m === 'zapisz') zapisz(el);
     if (m === 'folder') pobierzFolder(r);
+    if (m === 'szyfruj') arkuszSzyfruj(el);
     if (m === 'przypnij') przypnij(el, !r.przypiete);
     if (m === 'usun') { if (await usun(el)) poAkcji?.(); }
   });
@@ -936,6 +982,7 @@ function podepnijZdarzenia() {
     else if (a === 'dodaj-plik') arkuszDodaj();
     else if (a === 'pokaz-pliki') { const l = b.closest('.karta').querySelector('.lista-w-folderze'); l.classList.toggle('ukryte'); b.textContent = l.classList.contains('ukryte') ? 'Pokaż pliki' : 'Ukryj pliki'; }
     else if (a === 'pobierz-folder' && r) pobierzFolder(r);
+    else if (a === 'szyfruj' && r) { const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id)); arkuszSzyfruj(g?.typ === 'media' ? g.el : [r]); }
     else if (a === 'usun-zal') { const [z] = S.zalaczniki.splice(Number(b.dataset.i), 1); if (z?.podglad) URL.revokeObjectURL(z.podglad); odswiezPisanie(); }
     else if (a === 'wybierz-do') arkuszDo();
     else if (a === 'zmien-rodzaj') {

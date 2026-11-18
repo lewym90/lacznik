@@ -121,6 +121,35 @@ print(json.dumps({n:z.read(n).hex() for n in z.namelist()}))`, zp]).toString();
   const zaw = JSON.parse(lista);
   for (const [sc, d] of plikiF) assert.equal(zaw['Wakacje 2026/' + sc], d.toString('hex'), sc);
   ok('ZIP folderu poprawny (CRC, polskie nazwy, podfoldery)');
+  // zaszyfrowany ZIP: folder + osobny plik, oba tryby, sprawdzane niezależnymi bibliotekami (zipfile, pyzipper)
+  const luzny = crypto.randomBytes(70000);
+  const wl = (await j('/wysylki', { method: 'POST', json: { nazwa: 'umowa.pdf', rozmiar: luzny.length } }, A.token)).b;
+  await j(`/wysylki/${wl.id}?od=0`, { method: 'PUT', body: luzny }, A.token);
+  const luznyR = (await j(`/wysylki/${wl.id}/koniec`, { method: 'POST', json: {} }, A.token)).b;
+  r = await j('/zip-szyfrowany', { method: 'POST', json: { ids: [F.id], haslo: 'x' } }, B.token); assert.equal(r.s, 400);
+  for (const tryb of ['mocny', 'zgodny']) {
+    r = await j('/zip-szyfrowany', { method: 'POST', json: { ids: [F.id, luznyR.id], haslo: 'Tajne hasło ąę 123', tryb } }, B.token);
+    assert.equal(r.s, 200); assert.match(r.b.nazwa, /zaszyfrowany\)\.zip$/);
+    f = await fetch(API + r.b.url); assert.equal(f.status, 200);
+    const buf = Buffer.from(await f.arrayBuffer()); assert.equal(buf.length, Number(f.headers.get('content-length')));
+    const zpath = path.join(KAT, `szyfr-${tryb}.zip`); fs.writeFileSync(zpath, buf);
+    const wynik = execFileSync('python3', ['-c', `import sys,json,pyzipper,zipfile
+p, haslo = sys.argv[1], sys.argv[2].encode()
+Z = pyzipper.AESZipFile if sys.argv[3] == 'mocny' else zipfile.ZipFile
+z = Z(p); z.setpassword(haslo)
+out = {n: z.read(n).hex() for n in z.namelist()}
+try:
+    z2 = Z(p); z2.setpassword(b'zle haslo'); z2.read(z2.namelist()[0]); out['__zle'] = 'otwarte'
+except Exception: out['__zle'] = 'odrzucone'
+info = z.infolist()[0]
+out['__szyfr'] = 'AES' if info.compress_type == 99 or getattr(info, 'extra', b'')[:2] == b'\\x01\\x99' else 'ZipCrypto'
+print(json.dumps(out))`, zpath, 'Tajne hasło ąę 123', tryb]).toString();
+    const zaw = JSON.parse(wynik);
+    for (const [sc, d] of plikiF) assert.equal(zaw['Wakacje 2026/' + sc], d.toString('hex'), sc);
+    assert.equal(zaw['umowa.pdf'], luzny.toString('hex')); assert.equal(zaw.__zle, 'odrzucone');
+    ok(`zaszyfrowany ZIP „${tryb}”: otwiera się tylko właściwym hasłem, zawartość się zgadza`);
+  }
+  f = await fetch(API + '/zip-szyfrowany/' + 'x'.repeat(32)); assert.equal(f.status, 404);
   r = await j(`/rzeczy/${F.id}`, { method: 'PATCH', json: { przypiete: true } }, A.token);
   sB = (await j('/stan', {}, B.token)).b; assert.ok(sB.rzeczy.filter((x) => x.folder === F.id).every((x) => x.przypiete)); ok('przypięcie folderu obejmuje pliki');
   r = await j(`/rzeczy/${F.id}`, { method: 'DELETE' }, B.token); assert.equal(r.s, 200);
