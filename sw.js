@@ -1,9 +1,9 @@
 // Łącznik — service worker: działanie offline powłoki, powiadomienia, menu „Udostępnij” (Android, Windows)
-const WERSJA = '1.2.0';
+const WERSJA = '1.3.0';
 const PAMIEC = 'lacznik-' + WERSJA;
 const SKRZYNKA = 'lacznik-udostepnione';
 const POWLOKA = ['./', 'index.html', 'css/app.css?v=' + WERSJA, 'js/app.js?v=' + WERSJA, 'manifest.webmanifest',
-  'img/logowanie.webp', 'img/pusto.webp', 'ikony/ikona-180.png', 'ikony/ikona-192.png', 'ikony/ikona-32.png'];
+  'link.html', 'js/link.js?v=' + WERSJA, 'js/qrcode.js?v=1.4.4', 'img/logowanie.webp', 'img/pusto.webp', 'ikony/ikona-180.png', 'ikony/ikona-192.png', 'ikony/ikona-32.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(PAMIEC).then((c) => c.addAll(POWLOKA)).then(() => self.skipWaiting()));
@@ -36,8 +36,9 @@ self.addEventListener('fetch', (e) => {
   const powloka = u.origin === location.origin || u.hostname.endsWith('fonts.googleapis.com') || u.hostname.endsWith('fonts.gstatic.com');
   if (!powloka) return; // API serwera zawsze z sieci
   if (e.request.mode === 'navigate') {
-    e.respondWith(fetch(e.request).then((r) => { const k = r.clone(); caches.open(PAMIEC).then((c) => c.put('index.html', k)); return r; })
-      .catch(() => caches.match('index.html')));
+    const strona = u.pathname.endsWith('link.html') ? 'link.html' : 'index.html';
+    e.respondWith(fetch(e.request).then((r) => { const k = r.clone(); caches.open(PAMIEC).then((c) => c.put(strona, k)); return r; })
+      .catch(() => caches.match(strona)));
     return;
   }
   e.respondWith(caches.match(e.request).then((z) => z || fetch(e.request).then((r) => {

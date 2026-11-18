@@ -10,9 +10,10 @@ import path from 'node:path';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import zlib from 'node:zlib';
+import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 
-export const WERSJA = '1.2.0';
+export const WERSJA = '1.3.0';
 const PORT = Number(process.env.PORT || 18910);
 const DANE = process.env.LACZNIK_DANE || './dane';
 const ORIGINS = (process.env.LACZNIK_ORIGINS || 'https://lewym90.github.io,http://localhost:8765,http://127.0.0.1:8765').split(',');
@@ -29,7 +30,8 @@ const MAX_JSON = 1024 * 1024;
 const P_PLIKI = path.join(DANE, 'pliki');
 const P_MINI = path.join(DANE, 'miniatury');
 const P_TMP = path.join(DANE, 'wysylki');
-for (const d of [DANE, P_PLIKI, P_MINI, P_TMP]) fs.mkdirSync(d, { recursive: true });
+const P_KONW = path.join(DANE, 'konwersje');
+for (const d of [DANE, P_PLIKI, P_MINI, P_TMP, P_KONW]) fs.mkdirSync(d, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DANE, 'lacznik.db'));
 db.exec(`
@@ -51,10 +53,12 @@ db.exec(`
 `);
 // 1.1.0: foldery
 for (const sql of ['ALTER TABLE rzeczy ADD COLUMN folder TEXT', 'ALTER TABLE rzeczy ADD COLUMN sciezka TEXT', 'ALTER TABLE rzeczy ADD COLUMN crc INTEGER',
-  'ALTER TABLE rzeczy ADD COLUMN gotowy INTEGER NOT NULL DEFAULT 1', 'ALTER TABLE wysylki ADD COLUMN folder TEXT', 'ALTER TABLE wysylki ADD COLUMN sciezka TEXT']) {
+  'ALTER TABLE rzeczy ADD COLUMN gotowy INTEGER NOT NULL DEFAULT 1', 'ALTER TABLE wysylki ADD COLUMN folder TEXT', 'ALTER TABLE wysylki ADD COLUMN sciezka TEXT', 'ALTER TABLE rzeczy ADD COLUMN kodek TEXT']) {
   try { db.exec(sql); } catch { /* kolumna już jest */ }
 }
 db.exec('CREATE INDEX IF NOT EXISTS rzeczy_folder ON rzeczy(folder)');
+db.exec(`CREATE TABLE IF NOT EXISTS linki (id TEXT PRIMARY KEY, rzeczy TEXT NOT NULL, od INTEGER, utworzony INTEGER NOT NULL, wygasa INTEGER NOT NULL,
+  jednorazowy INTEGER NOT NULL DEFAULT 0, haslo TEXT, uzyty INTEGER NOT NULL DEFAULT 0, pobrania INTEGER NOT NULL DEFAULT 0)`);
 const MAX_FOLDER = 4_000_000_000; // ZIP bez rozszerzenia ZIP64
 
 const teraz = () => Date.now();
@@ -172,16 +176,22 @@ function czyMiejsce(rozmiar) {
 }
 
 const widoczna = (r, devId) => r.do_id == null || r.do_id === devId || r.od === devId;
-function dlaKlienta(r, devId) {
+function aktywneLinki() {
+  const m = new Map();
+  for (const l of db.prepare('SELECT rzeczy FROM linki WHERE uzyty = 0 AND wygasa > ?').all(teraz())) for (const id of JSON.parse(l.rzeczy)) m.set(id, (m.get(id) || 0) + 1);
+  return m;
+}
+function dlaKlienta(r, devId, linki = null) {
   const o = {
     id: r.id, rodzaj: r.rodzaj, tekst: r.tekst, tytul: r.tytul, url: r.url, strona: r.strona,
     od: r.od, odNazwa: r.od_nazwa, odTyp: r.od_typ, do: r.do_id, utworzone: r.utworzone, wygasa: r.wygasa,
     przypiete: !!r.przypiete, odebrane: JSON.parse(r.odebrane || '{}'), folder: r.folder || null, sciezka: r.sciezka || null,
+    linki: r.folder ? 0 : (linki || aktywneLinki()).get(r.id) || 0,
   };
   if (r.rodzaj === 'folder') Object.assign(o, { nazwa: r.nazwa, rozmiar: r.rozmiar, gotowy: !!r.gotowy, zip: `/folder-zip/${r.id}?u=${devId}&k=${podpis(r.id, devId)}` });
   if (r.rodzaj === 'plik') {
     const k = podpis(r.id, devId);
-    Object.assign(o, { nazwa: r.nazwa, mime: r.mime, rozmiar: r.rozmiar, szer: r.szer, wys: r.wys,
+    Object.assign(o, { nazwa: r.nazwa, mime: r.mime, rozmiar: r.rozmiar, szer: r.szer, wys: r.wys, kodek: r.kodek || null,
       plik: `/plik/${r.id}?u=${devId}&k=${k}`, miniatura: r.mini ? `/miniatura/${r.id}?u=${devId}&k=${k}` : null });
   }
   return o;
@@ -201,7 +211,7 @@ function nadaj(zdarzenie, fn) {
 }
 const nadajUrzadzenia = () => nadaj('urzadzenia', () => listaUrzadzen());
 const nadajMiejsce = () => { const m = miejsce(); nadaj('miejsce', () => m); };
-function nadajRzecz(r) { nadaj('rzecz', (dev) => (widoczna(r, dev) ? dlaKlienta(r, dev) : undefined)); }
+function nadajRzecz(r) { const l = aktywneLinki(); nadaj('rzecz', (dev) => (widoczna(r, dev) ? dlaKlienta(r, dev, l) : undefined)); }
 function nadajUsun(r) { nadaj('usun', (dev) => (widoczna(r, dev) ? { id: r.id } : undefined)); }
 setInterval(() => {
   for (const c of polaczenia) {
@@ -292,6 +302,7 @@ function usunRzecz(r) {
   if (r.rodzaj === 'plik') {
     fs.rm(path.join(P_PLIKI, r.id), { force: true }, () => {});
     fs.rm(path.join(P_MINI, r.id + '.jpg'), { force: true }, () => {});
+    for (const e of ['jpg', 'mp4']) fs.rm(path.join(P_KONW, `${r.id}.${e}`), { force: true }, () => {});
   }
   nadajUsun(r);
   if (r.rodzaj === 'plik') nadajMiejsce();
@@ -469,6 +480,128 @@ const wpisyFolderu = (f) => db.prepare('SELECT * FROM rzeczy WHERE folder = ? OR
 const zlecenia = new Map();
 setInterval(() => { for (const [k, z] of zlecenia) if (z.wygasa < teraz()) zlecenia.delete(k); }, 60e3).unref();
 
+// ---------- wersje zgodne: HEIC → JPG, film HEVC (iPhone) → MP4 H.264 ----------
+const jestNarzedzie = (c) => { try { return spawnSync('sh', ['-c', `command -v ${c}`]).status === 0; } catch { return false; } };
+const NARZ = { heif: jestNarzedzie('heif-convert'), ffmpeg: jestNarzedzie('ffmpeg'), ffprobe: jestNarzedzie('ffprobe') };
+function sonda(plik) {
+  return new Promise((ok) => {
+    if (!NARZ.ffprobe) return ok(null);
+    const p = spawn('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name:format=duration', '-of', 'json', plik]);
+    let o = ''; const t = setTimeout(() => p.kill('SIGKILL'), 30e3);
+    p.stdout.on('data', (d) => { o += d; });
+    p.on('close', () => { clearTimeout(t); try { const j = JSON.parse(o); ok({ kodek: j.streams?.[0]?.codec_name || null, czas: Number(j.format?.duration) || 0 }); } catch { ok(null); } });
+    p.on('error', () => { clearTimeout(t); ok(null); });
+  });
+}
+async function wykryjKodek(r) {
+  if (!r || !/^video\//.test(r.mime || '')) return;
+  const s = await sonda(path.join(P_PLIKI, r.id));
+  if (!s?.kodek) return;
+  db.prepare('UPDATE rzeczy SET kodek = ? WHERE id = ?').run(s.kodek, r.id);
+  const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(r.id); if (z) nadajRzecz(z);
+}
+const celKonw = (r) => (/^image\/hei[cf]$/.test(r.mime || '') ? 'jpg' : /^video\//.test(r.mime || '') ? 'mp4' : null);
+const plikKonw = (r, e) => path.join(P_KONW, `${r.id}.${e}`);
+const nazwaKonw = (r, e) => r.nazwa.replace(/\.[^.]+$/, '') + '.' + e;
+const KONW = new Map();
+const kolejkaKonw = { jpg: [], mp4: [] }; const pracuje = { jpg: 0, mp4: 0 }; const ILE = { jpg: 2, mp4: 1 };
+function stanKonw(r) {
+  const e = celKonw(r);
+  if (!e) return { stan: 'niepotrzebna' };
+  if (e === 'mp4' && r.kodek && r.kodek !== 'hevc') return { stan: 'niepotrzebna' };
+  if (fs.existsSync(plikKonw(r, e))) return { stan: 'gotowe', ext: e, nazwa: nazwaKonw(r, e) };
+  return KONW.get(r.id) || { stan: 'brak' };
+}
+async function zlecKonw(r) {
+  const e = celKonw(r);
+  if (!e) return { stan: 'niepotrzebna' };
+  if (e === 'mp4') {
+    if (!NARZ.ffmpeg || !NARZ.ffprobe) return { stan: 'brak-narzedzi', blad: 'Na serwerze brakuje programu do przerabiania filmów.' };
+    if (!r.kodek) { const s = await sonda(path.join(P_PLIKI, r.id)); if (s?.kodek) { r.kodek = s.kodek; db.prepare('UPDATE rzeczy SET kodek = ? WHERE id = ?').run(s.kodek, r.id); } }
+  } else if (!NARZ.heif) return { stan: 'brak-narzedzi', blad: 'Na serwerze brakuje programu do przerabiania zdjęć HEIC.' };
+  const s = stanKonw(r);
+  if (s.stan !== 'brak' && s.stan !== 'blad') return s;
+  if (wolneNaDysku() - r.rozmiar * 1.5 < MIN_WOLNE) return { stan: 'blad', blad: 'Za mało miejsca na serwerze, żeby przerobić ten plik.' };
+  const k = { stan: 'czeka', postep: 0, ext: e };
+  KONW.set(r.id, k); kolejkaKonw[e].push(r.id); pompujKonw();
+  return k;
+}
+function pompujKonw() {
+  for (const e of ['jpg', 'mp4']) while (pracuje[e] < ILE[e] && kolejkaKonw[e].length) {
+    const id = kolejkaKonw[e].shift(); pracuje[e]++;
+    wykonajKonw(id, e).finally(() => { pracuje[e]--; pompujKonw(); });
+  }
+}
+async function wykonajKonw(id, e) {
+  const r = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id); const k = KONW.get(id);
+  if (!r || !k) { KONW.delete(id); return; }
+  k.stan = 'trwa';
+  const wej = path.join(P_PLIKI, r.id), cel = plikKonw(r, e), tmp = path.join(P_KONW, `${r.id}.tmp.${e}`);
+  let args;
+  if (e === 'jpg') args = ['heif-convert', '-q', '90', wej, tmp];
+  else {
+    const s = await sonda(wej); k.czas = s?.czas || 0;
+    args = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-y', '-i', wej, '-map', '0:v:0', '-map', '0:a:0?',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-vf', "scale='if(gt(iw,ih),min(1920,iw),-2)':'if(gt(iw,ih),-2,min(1920,ih))'",
+      '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-threads', '2', '-f', 'mp4', tmp];
+  }
+  await new Promise((ok) => {
+    const p = spawn('nice', ['-n', '19', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = '';
+    const limit = setTimeout(() => p.kill('SIGKILL'), 3 * 3600e3);
+    p.stderr.on('data', (d) => { err = (err + d).slice(-2000); });
+    p.stdout.on('data', (d) => { const m = [...String(d).matchAll(/out_time_(?:us|ms)=(\d+)/g)].pop(); if (m && k.czas) k.postep = Math.min(0.99, Number(m[1]) / 1e6 / k.czas); });
+    p.on('close', (kod) => {
+      clearTimeout(limit);
+      let ok2 = false; try { ok2 = kod === 0 && fs.statSync(tmp).size > 0; } catch {}
+      if (ok2 && db.prepare('SELECT 1 FROM rzeczy WHERE id = ?').get(id)) { fs.renameSync(tmp, cel); KONW.delete(id); }
+      else { fs.rm(tmp, { force: true }, () => {}); k.stan = 'blad'; k.blad = 'Nie udało się przerobić tego pliku.'; if (kod) console.error('konwersja', id, err.slice(-300)); setTimeout(() => KONW.delete(id), 10 * 60e3); }
+      ok();
+    });
+    p.on('error', () => { clearTimeout(limit); k.stan = 'blad'; k.blad = 'Brak programu do przerabiania.'; ok(); });
+  });
+}
+function opisKonw(r, s, adres) { return { ...s, mime: s.ext === 'jpg' ? 'image/jpeg' : s.ext === 'mp4' ? 'video/mp4' : undefined, nazwa: s.ext ? nazwaKonw(r, s.ext) : undefined, url: s.stan === 'gotowe' ? adres : undefined }; }
+
+// ---------- linki dla osób spoza domu ----------
+const linkAktywny = (id) => { const l = db.prepare('SELECT * FROM linki WHERE id = ?').get(id); return l && !l.uzyty && l.wygasa > teraz() ? l : null; };
+const tokenLinku = (l, exp) => `${exp}.${crypto.createHmac('sha256', SEKRET).update(`link|${l.id}|${exp}`).digest('base64url').slice(0, 32)}`;
+function dostepDoLinku(l, t) {
+  if (!l.haslo) return true;
+  t = String(t || ''); const exp = Number(t.split('.')[0]);
+  if (!exp || exp < teraz()) return false;
+  const wz = tokenLinku(l, exp);
+  return wz.length === t.length && crypto.timingSafeEqual(Buffer.from(wz), Buffer.from(t));
+}
+function plikiLinku(l) {
+  const out = [];
+  for (const id of JSON.parse(l.rzeczy)) {
+    const r = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id);
+    if (!r) continue;
+    if (r.rodzaj === 'folder') out.push(...wpisyFolderu(r)); else if (r.rodzaj === 'plik') out.push({ r, nazwa: r.nazwa });
+  }
+  return out;
+}
+async function uzupelnijCrc(wpisy) {
+  for (const w of wpisy) if (w.r.crc == null) { w.r.crc = await crcPliku(path.join(P_PLIKI, w.r.id)); db.prepare('UPDATE rzeczy SET crc = ? WHERE id = ?').run(w.r.crc, w.r.id); }
+  const zajete = new Set();
+  for (const w of wpisy) { let n = w.nazwa, i = 2; while (zajete.has(n)) n = w.nazwa.replace(/(\.[^./]+)?$/, ` (${i++})$1`); zajete.add(n); w.nazwa = n; }
+  return wpisy;
+}
+function zuzyjPoPobraniu(l, res) {
+  res.on('finish', () => {
+    if (res.statusCode !== 200) return;
+    db.prepare('UPDATE linki SET pobrania = pobrania + 1, uzyty = CASE WHEN jednorazowy = 1 THEN 1 ELSE uzyty END WHERE id = ?').run(l.id);
+    if (l.jednorazowy) for (const id of JSON.parse(l.rzeczy)) { const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id); if (z) nadajRzecz(z); }
+  });
+}
+
+// ---------- dołączanie nowego urządzenia kodem (QR) ----------
+const zaproszenia = new Map();
+const ALF = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const normKod = (k) => { const s = String(k || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); return s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4)}` : ''; };
+setInterval(() => { for (const [k, z] of zaproszenia) if (z.wygasa < teraz()) zaproszenia.delete(k); }, 60e3).unref();
+
 // ---------- sprzątanie ----------
 function sprzataj() {
   for (const r of db.prepare('SELECT * FROM rzeczy WHERE przypiete = 0 AND wygasa IS NOT NULL AND wygasa < ?').all(teraz())) usunRzecz(r);
@@ -481,6 +614,11 @@ function sprzataj() {
   const znane = new Set(db.prepare("SELECT id FROM rzeczy WHERE rodzaj = 'plik'").all().map((r) => r.id));
   for (const f of fs.readdirSync(P_PLIKI)) if (!znane.has(f)) fs.rm(path.join(P_PLIKI, f), { force: true }, () => {});
   for (const f of fs.readdirSync(P_MINI)) if (!znane.has(f.replace(/\.jpg$/, ''))) fs.rm(path.join(P_MINI, f), { force: true }, () => {});
+  for (const f of fs.readdirSync(P_KONW)) {
+    const id = f.split('.')[0]; let st; try { st = fs.statSync(path.join(P_KONW, f)); } catch { continue; }
+    if (!znane.has(id) || (f.includes('.tmp.') && !KONW.has(id) && teraz() - st.mtimeMs > DNI)) fs.rm(path.join(P_KONW, f), { force: true }, () => {});
+  }
+  db.prepare('DELETE FROM linki WHERE wygasa < ? OR uzyty = 1').run(teraz() - DNI);
   const wys = new Set(db.prepare('SELECT id FROM wysylki').all().map((w) => w.id));
   for (const f of fs.readdirSync(P_TMP)) if (!wys.has(f)) fs.rm(path.join(P_TMP, f), { force: true }, () => {});
 }
@@ -539,15 +677,20 @@ async function obsluz(req, res) {
   const p = u.pathname.replace(/\/+$/, '') || '/';
   const ip = ipKlienta(req);
 
-  if (p === '/zdrowie' || p === '/') return send(200, { ok: true, wersja: WERSJA, haslo: !!ust('haslo'), urzadzenia: db.prepare('SELECT COUNT(*) AS n FROM urzadzenia').get().n });
+  if (p === '/zdrowie' || p === '/') return send(200, { ok: true, wersja: WERSJA, haslo: !!ust('haslo'), narzedzia: NARZ, urzadzenia: db.prepare('SELECT COUNT(*) AS n FROM urzadzenia').get().n });
 
   if (p === '/polacz' && req.method === 'POST') {
     const blok = zablokowany(ip);
     if (blok) return send(429, { blad: `Za dużo błędnych prób. Spróbuj za ${blok} min.` });
     const b = await czytajJSON(req);
     const zapis = ust('haslo');
-    if (!zapis) return send(503, { blad: 'Hasło nie jest jeszcze ustawione na serwerze.' });
-    if (!sprawdzHaslo(b.haslo, zapis)) { nieudana(ip); return send(401, { blad: 'Nieprawidłowe hasło.' }); }
+    if (b.kod) {
+      const kod = normKod(b.kod), z = zaproszenia.get(kod);
+      if (!z || z.wygasa < teraz()) { nieudana(ip); return send(401, { blad: 'Kod jest nieprawidłowy albo wygasł. Wygeneruj nowy na innym urządzeniu.' }); }
+    } else {
+      if (!zapis) return send(503, { blad: 'Hasło nie jest jeszcze ustawione na serwerze.' });
+      if (!sprawdzHaslo(b.haslo, zapis)) { nieudana(ip); return send(401, { blad: 'Nieprawidłowe hasło.' }); }
+    }
     proby.delete(ip);
     const token = losowe(32);
     const nazwa = czystaNazwa(b.nazwa) || 'Urządzenie';
@@ -558,8 +701,54 @@ async function obsluz(req, res) {
     return send(200, { token, id: Number(r.lastInsertRowid), nazwa, typ });
   }
 
+  // ----- publiczne linki (bez logowania) -----
+  const ml = /^\/publiczne\/([A-Za-z0-9_-]{20,40})(?:\/(otworz|zip|plik|mini|konw|konwersja)(?:\/([A-Za-z0-9_-]{6,20}))?)?$/.exec(p);
+  if (ml) {
+    const l = linkAktywny(ml[1]);
+    if (!l) return send(404, { blad: 'Ten link wygasł albo został już wykorzystany.' });
+    const co = ml[2], fid = ml[3];
+    if (co === 'otworz' && req.method === 'POST') {
+      const klucz = `link:${l.id}:${ip}`, blok = zablokowany(klucz);
+      if (blok) return send(429, { blad: `Za dużo błędnych prób. Spróbuj za ${blok} min.` });
+      const b = await czytajJSON(req);
+      if (l.haslo && !sprawdzHaslo(b.haslo, l.haslo)) { nieudana(klucz); return send(401, { blad: 'Nieprawidłowe hasło.' }); }
+      proby.delete(klucz);
+      return send(200, { t: l.haslo ? tokenLinku(l, teraz() + 2 * 3600e3) : '' });
+    }
+    const t = u.searchParams.get('t');
+    if (!dostepDoLinku(l, t)) return send(co ? 403 : 200, co ? { blad: 'Najpierw wpisz hasło.' } : { haslo: true, wygasa: l.wygasa });
+    const wpisy = plikiLinku(l);
+    if (!wpisy.length) return send(404, { blad: 'Tych plików już nie ma.' });
+    const top = JSON.parse(l.rzeczy).map((id) => db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id)).filter(Boolean);
+    const nazwaZip = top.length === 1 && top[0].rodzaj === 'folder' ? top[0].nazwa : wpisy.length === 1 ? wpisy[0].r.nazwa.replace(/\.[^.]+$/, '') : 'Udostępnione pliki';
+    if (!co && (req.method === 'GET' || req.method === 'HEAD')) {
+      return send(200, { wygasa: l.wygasa, jednorazowy: !!l.jednorazowy, haslo: !!l.haslo, nazwa: nazwaZip, suma: wpisy.reduce((a, w) => a + w.r.rozmiar, 0),
+        pliki: wpisy.map((w) => ({ id: w.r.id, nazwa: w.nazwa, rozmiar: w.r.rozmiar, mime: w.r.mime, mini: !!w.r.mini, kodek: w.r.kodek || null, konw: celKonw(w.r) })) });
+    }
+    if (co === 'zip' && (req.method === 'GET' || req.method === 'HEAD')) {
+      if (req.method === 'GET') zuzyjPoPobraniu(l, res);
+      return wyslijZip(req, res, nazwaZip + '.zip', await uzupelnijCrc(wpisy), nag);
+    }
+    const w = wpisy.find((x) => x.r.id === fid);
+    if (!w) return send(404, { blad: 'Nie ma takiego pliku.' });
+    if (co === 'mini') return wyslijPlik(req, res, path.join(P_MINI, w.r.id + '.jpg'), 'image/jpeg', null, false, nag);
+    if (co === 'konwersja') return send(200, opisKonw(w.r, req.method === 'POST' ? await zlecKonw(w.r) : stanKonw(w.r), `/publiczne/${l.id}/konw/${w.r.id}`));
+    if (co === 'plik' || co === 'konw') {
+      const pobierz = u.searchParams.get('pobierz') === '1';
+      if (l.jednorazowy && wpisy.length > 1) return send(403, { blad: 'Ten link pozwala pobrać tylko całość naraz.' });
+      if (l.jednorazowy && !pobierz) return send(403, { blad: 'Ten link jest jednorazowy — można tylko pobrać plik.' });
+      if (pobierz && req.method === 'GET' && !req.headers.range) zuzyjPoPobraniu(l, res);
+      if (co === 'konw') {
+        const s = stanKonw(w.r); if (s.stan !== 'gotowe') return send(409, { blad: 'Wersja zgodna nie jest jeszcze gotowa.' });
+        return wyslijPlik(req, res, plikKonw(w.r, s.ext), s.ext === 'jpg' ? 'image/jpeg' : 'video/mp4', nazwaKonw(w.r, s.ext), pobierz, nag);
+      }
+      return wyslijPlik(req, res, path.join(P_PLIKI, w.r.id), w.r.mime, w.nazwa.split('/').pop(), pobierz, nag);
+    }
+    return send(405, { blad: 'Niedozwolone.' });
+  }
+
   // pliki i miniatury: adres podpisany dla konkretnego urządzenia (działa w <img>/<video>)
-  const mp = /^\/(plik|miniatura)\/([A-Za-z0-9_-]{6,20})$/.exec(p);
+  const mp = /^\/(plik|miniatura|konw)\/([A-Za-z0-9_-]{6,20})$/.exec(p);
   if (mp && (req.method === 'GET' || req.method === 'HEAD')) {
     const devId = Number(u.searchParams.get('u'));
     const k = String(u.searchParams.get('k') || '');
@@ -568,6 +757,10 @@ async function obsluz(req, res) {
     const r = dev && db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'plik'").get(mp[2]);
     if (!r || !widoczna(r, devId)) return send(404, { blad: 'Nie ma takiego pliku.' });
     if (mp[1] === 'miniatura') return wyslijPlik(req, res, path.join(P_MINI, r.id + '.jpg'), 'image/jpeg', null, false, nag);
+    if (mp[1] === 'konw') {
+      const s = stanKonw(r); if (s.stan !== 'gotowe') return send(409, { blad: 'Wersja zgodna nie jest jeszcze gotowa.' });
+      return wyslijPlik(req, res, plikKonw(r, s.ext), s.ext === 'jpg' ? 'image/jpeg' : 'video/mp4', nazwaKonw(r, s.ext), u.searchParams.get('pobierz') === '1', nag);
+    }
     return wyslijPlik(req, res, path.join(P_PLIKI, r.id), r.mime, r.nazwa, u.searchParams.get('pobierz') === '1', nag);
   }
   const mzs = /^\/zip-szyfrowany\/([A-Za-z0-9_-]{20,64})$/.exec(p);
@@ -581,11 +774,7 @@ async function obsluz(req, res) {
       if (r.rodzaj === 'folder') wpisy.push(...wpisyFolderu(r)); else if (r.rodzaj === 'plik') wpisy.push({ r, nazwa: r.nazwa });
     }
     if (!wpisy.length) return send(404, { blad: 'Tych plików już nie ma.' });
-    // brakujące CRC (pliki sprzed wersji 1.2.0) liczymy teraz
-    for (const w of wpisy) if (w.r.crc == null) { w.r.crc = await crcPliku(path.join(P_PLIKI, w.r.id)); db.prepare('UPDATE rzeczy SET crc = ? WHERE id = ?').run(w.r.crc, w.r.id); }
-    const zajete = new Set();
-    for (const w of wpisy) { let n = w.nazwa, i = 2; while (zajete.has(n)) n = w.nazwa.replace(/(\.[^./]+)?$/, ` (${i++})$1`); zajete.add(n); w.nazwa = n; }
-    return wyslijZip(req, res, z.nazwa, wpisy, nag, z.tryb, z.haslo);
+    return wyslijZip(req, res, z.nazwa, await uzupelnijCrc(wpisy), nag, z.tryb, z.haslo);
   }
   const mz = /^\/folder-zip\/([A-Za-z0-9_-]{6,20})$/.exec(p);
   if (mz && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -595,7 +784,7 @@ async function obsluz(req, res) {
     const dev = ok && db.prepare('SELECT id FROM urzadzenia WHERE id = ?').get(devId);
     const f = dev && db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'folder'").get(mz[1]);
     if (!f || !widoczna(f, devId)) return send(404, { blad: 'Nie ma takiego folderu.' });
-    return wyslijZip(req, res, f.nazwa + '.zip', wpisyFolderu(f), nag);
+    return wyslijZip(req, res, f.nazwa + '.zip', await uzupelnijCrc(wpisyFolderu(f)), nag);
   }
 
   // na żywo — EventSource nie wysyła nagłówków, więc token w adresie
@@ -618,7 +807,8 @@ async function obsluz(req, res) {
   if (!dev) return send(401, { blad: 'Urządzenie nie jest połączone.' });
 
   if (p === '/stan' && req.method === 'GET') {
-    const rzeczy = db.prepare('SELECT * FROM rzeczy ORDER BY utworzone DESC').all().filter((r) => widoczna(r, dev.id)).map((r) => dlaKlienta(r, dev.id));
+    const l = aktywneLinki();
+    const rzeczy = db.prepare('SELECT * FROM rzeczy ORDER BY utworzone DESC').all().filter((r) => widoczna(r, dev.id)).map((r) => dlaKlienta(r, dev.id, l));
     return send(200, { wersja: WERSJA, ja: { id: dev.id, nazwa: dev.nazwa, typ: dev.typ, push: !!dev.push }, urzadzenia: listaUrzadzen(), rzeczy, miejsce: miejsce(), vapid: VAPID_PUB });
   }
 
@@ -715,8 +905,55 @@ async function obsluz(req, res) {
         szer: Number.isFinite(+b.szer) ? Math.round(+b.szer) : null, wys: Number.isFinite(+b.wys) ? Math.round(+b.wys) : null, mini,
         od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: w.do_id, utworzone: t, wygasa: f ? f.wygasa : t + ZYCIE, przypiete: f ? f.przypiete : 0,
         folder: f ? f.id : null, sciezka: f ? w.sciezka : null, crc: await crcPliku(cel) }, { cicho: !!f });
+      wykryjKodek(r).catch(() => {});
       return send(200, dlaKlienta(r, dev.id));
     }
+  }
+
+  // ----- wersja zgodna (JPG/MP4) -----
+  const mk = /^\/konwersja\/([A-Za-z0-9_-]{6,20})$/.exec(p);
+  if (mk) {
+    const r = db.prepare("SELECT * FROM rzeczy WHERE id = ? AND rodzaj = 'plik'").get(mk[1]);
+    if (!r || !widoczna(r, dev.id)) return send(404, { blad: 'Nie ma takiego pliku.' });
+    const s = req.method === 'POST' ? await zlecKonw(r) : stanKonw(r);
+    return send(200, opisKonw(r, s, `/konw/${r.id}?u=${dev.id}&k=${podpis(r.id, dev.id)}`));
+  }
+
+  // ----- linki dla innych -----
+  if (p === '/linki' && req.method === 'POST') {
+    const b = await czytajJSON(req);
+    const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].slice(0, 500);
+    const rz = ids.map((id) => db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id)).filter((r) => r && widoczna(r, dev.id) && !r.folder && (r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy)));
+    if (!rz.length) return send(404, { blad: 'Nie ma czego udostępnić.' });
+    const godz = [1, 24, 168].includes(Number(b.godziny)) ? Number(b.godziny) : 24;
+    let haslo = null;
+    if (b.haslo) { if (String(b.haslo).length < 4) return send(400, { blad: 'Hasło musi mieć co najmniej 4 znaki.' }); haslo = hashHasla(String(b.haslo)); }
+    const id = losowe(18), t = teraz();
+    db.prepare('INSERT INTO linki (id, rzeczy, od, utworzony, wygasa, jednorazowy, haslo) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, JSON.stringify(rz.map((r) => r.id)), dev.id, t, t + godz * 3600e3, b.jednorazowy ? 1 : 0, haslo);
+    for (const r of rz) nadajRzecz(r);
+    return send(200, { id, wygasa: t + godz * 3600e3, jednorazowy: !!b.jednorazowy, haslo: !!haslo });
+  }
+  if (p === '/linki' && req.method === 'GET') {
+    const rid = String(u.searchParams.get('rzecz') || '');
+    const lista = db.prepare('SELECT * FROM linki WHERE uzyty = 0 AND wygasa > ? ORDER BY utworzony DESC').all(teraz())
+      .filter((l) => JSON.parse(l.rzeczy).includes(rid)).map((l) => ({ id: l.id, wygasa: l.wygasa, jednorazowy: !!l.jednorazowy, haslo: !!l.haslo, pobrania: l.pobrania }));
+    return send(200, { linki: lista });
+  }
+  const mlk = /^\/linki\/([A-Za-z0-9_-]{20,40})$/.exec(p);
+  if (mlk && req.method === 'DELETE') {
+    const l = db.prepare('SELECT * FROM linki WHERE id = ?').get(mlk[1]);
+    if (!l) return send(404, { blad: 'Nie ma takiego linku.' });
+    db.prepare('DELETE FROM linki WHERE id = ?').run(l.id);
+    for (const id of JSON.parse(l.rzeczy)) { const z = db.prepare('SELECT * FROM rzeczy WHERE id = ?').get(id); if (z) nadajRzecz(z); }
+    return send(200, { ok: true });
+  }
+
+  // ----- kod do dołączenia nowego urządzenia -----
+  if (p === '/zaproszenie' && req.method === 'POST') {
+    let kod; do { const b = crypto.randomBytes(8); kod = normKod([...b].map((x) => ALF[x % 32]).join('')); } while (zaproszenia.has(kod));
+    const wygasa = teraz() + 10 * 60e3;
+    zaproszenia.set(kod, { wygasa, od: dev.id });
+    return send(200, { kod, wygasa });
   }
 
   // ----- zaszyfrowany ZIP -----
@@ -802,7 +1039,7 @@ async function obsluz(req, res) {
     const ext = nazwa.split('.').pop().toLowerCase();
     const mime = mimeS !== 'application/octet-stream' ? mimeS : (MIME_EXT[ext] || (/^[\w.+-]+\/[\w.+-]+$/.test(typ) ? typ : mimeS));
     const t = teraz();
-    dodajRzecz({ id, rodzaj: 'plik', nazwa, mime, rozmiar: n, od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: adresDo(dev, u.searchParams.get('do')), utworzone: t, wygasa: t + ZYCIE });
+    wykryjKodek(dodajRzecz({ id, rodzaj: 'plik', nazwa, mime, rozmiar: n, od: dev.id, od_nazwa: dev.nazwa, od_typ: dev.typ, do_id: adresDo(dev, u.searchParams.get('do')), utworzone: t, wygasa: t + ZYCIE })).catch(() => {});
     return send(200, { ok: true, id });
   }
 

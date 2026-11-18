@@ -156,6 +156,73 @@ print(json.dumps(out))`, zpath, 'Tajne hasło ąę 123', tryb]).toString();
   sB = (await j('/stan', {}, B.token)).b; assert.ok(!sB.rzeczy.some((x) => x.id === F.id || x.folder === F.id)); ok('usunięcie folderu usuwa pliki');
   r = await j('/foldery', { method: 'POST', json: { nazwa: 'X', liczba: 1, rozmiar: 5_000_000_000 } }, A.token); assert.equal(r.s, 507); ok('za duży folder odrzucony');
 
+  // ----- 1.3.0: linki, kod dołączenia, wersje zgodne -----
+  const wyslijPlikT = async (tok, nazwa, dane, mime) => {
+    const w3 = (await j('/wysylki', { method: 'POST', json: { nazwa, rozmiar: dane.length, mime } }, tok)).b;
+    await j(`/wysylki/${w3.id}?od=0`, { method: 'PUT', body: dane }, tok);
+    return (await j(`/wysylki/${w3.id}/koniec`, { method: 'POST', json: {} }, tok)).b;
+  };
+  for (const x of (await j('/stan', {}, A.token)).b.rzeczy) if (!x.folder && x.rodzaj !== 'notatka') await j(`/rzeczy/${x.id}`, { method: 'DELETE' }, A.token);
+  const d1 = crypto.randomBytes(40000), d2 = crypto.randomBytes(30000);
+  const p1 = await wyslijPlikT(A.token, 'raport.pdf', d1, 'application/pdf');
+  const p2 = await wyslijPlikT(A.token, 'zdjecie.jpg', d2, 'image/jpeg');
+  // link zwykły
+  r = await j('/linki', { method: 'POST', json: { ids: [p1.id, p2.id], godziny: 24 } }, A.token); assert.equal(r.s, 200);
+  const L1 = r.b.id;
+  r = await j(`/publiczne/${L1}`); assert.equal(r.b.pliki.length, 2); assert.equal(r.b.haslo, false);
+  f = await fetch(`${API}/publiczne/${L1}/plik/${p1.id}?pobierz=1`); assert.ok(Buffer.from(await f.arrayBuffer()).equals(d1));
+  f = await fetch(`${API}/publiczne/${L1}/plik/${p1.id}?pobierz=1`); assert.equal(f.status, 200); await f.arrayBuffer();
+  f = await fetch(`${API}/publiczne/${L1}/zip`); assert.equal(f.status, 200); await f.arrayBuffer();
+  r = await j(`/publiczne/${L1}/plik/${(await j('/stan', {}, A.token)).b.rzeczy.find((x) => x.rodzaj === 'notatka')?.id || 'abcdefgh'}`); assert.equal(r.s, 404);
+  assert.equal((await j('/stan', {}, A.token)).b.rzeczy.find((x) => x.id === p1.id).linki, 1);
+  ok('link dla innych: lista, pobieranie plików i ZIP-a, nie da się sięgnąć po inne rzeczy');
+  // link z hasłem
+  r = await j('/linki', { method: 'POST', json: { ids: [p1.id], godziny: 1, haslo: 'kot123' } }, A.token); const L2 = r.b.id;
+  r = await j(`/publiczne/${L2}`); assert.equal(r.b.haslo, true); assert.equal(r.b.pliki, undefined);
+  f = await fetch(`${API}/publiczne/${L2}/plik/${p1.id}?pobierz=1`); assert.equal(f.status, 403);
+  r = await j(`/publiczne/${L2}/otworz`, { method: 'POST', json: { haslo: 'zle' } }); assert.equal(r.s, 401);
+  r = await j(`/publiczne/${L2}/otworz`, { method: 'POST', json: { haslo: 'kot123' } }); const tk = r.b.t; assert.ok(tk);
+  f = await fetch(`${API}/publiczne/${L2}/plik/${p1.id}?pobierz=1&t=${encodeURIComponent(tk)}`); assert.ok(Buffer.from(await f.arrayBuffer()).equals(d1));
+  ok('link z hasłem: bez hasła nic nie widać, z hasłem działa');
+  // link jednorazowy, jeden plik
+  r = await j('/linki', { method: 'POST', json: { ids: [p2.id], jednorazowy: true } }, A.token); const L3 = r.b.id;
+  f = await fetch(`${API}/publiczne/${L3}/plik/${p2.id}`); assert.equal(f.status, 403);
+  f = await fetch(`${API}/publiczne/${L3}/mini/${p2.id}`); assert.equal(f.status, 404); // brak miniatury w teście, ale dostęp przepuszczony
+  f = await fetch(`${API}/publiczne/${L3}/plik/${p2.id}?pobierz=1`); assert.ok(Buffer.from(await f.arrayBuffer()).equals(d2));
+  await new Promise((s2) => setTimeout(s2, 100));
+  r = await j(`/publiczne/${L3}`); assert.equal(r.s, 404);
+  ok('link jednorazowy znika po pierwszym pobraniu');
+  // jednorazowy wiele plików: tylko ZIP
+  r = await j('/linki', { method: 'POST', json: { ids: [p1.id, p2.id], jednorazowy: true } }, A.token); const L4 = r.b.id;
+  f = await fetch(`${API}/publiczne/${L4}/plik/${p1.id}?pobierz=1`); assert.equal(f.status, 403);
+  f = await fetch(`${API}/publiczne/${L4}/zip`); assert.equal(f.status, 200); await f.arrayBuffer(); await new Promise((s2) => setTimeout(s2, 100));
+  assert.equal((await j(`/publiczne/${L4}`)).s, 404); ok('jednorazowy z wieloma plikami: tylko całość jako ZIP');
+  r = await j(`/linki/${L1}`, { method: 'DELETE' }, A.token); assert.equal((await j(`/publiczne/${L1}`)).s, 404); ok('wyłączenie linku');
+  // kod dołączenia
+  r = await j('/zaproszenie', { method: 'POST' }, A.token); const kod = r.b.kod; assert.match(kod, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  r = await j('/polacz', { method: 'POST', json: { kod: kod.toLowerCase().replace('-', ' '), nazwa: 'Nowy Android', typ: 'android' } }); assert.equal(r.s, 200); assert.ok(r.b.token);
+  r = await j('/polacz', { method: 'POST', json: { kod: 'AAAA-BBBB', nazwa: 'X' } }); assert.equal(r.s, 401); ok('dołączanie kodem z innego urządzenia');
+  // wersje zgodne
+  const KONW_DIR = new URL('../../test-lacznik/konw/', import.meta.url).pathname;
+  if (fs.existsSync(KONW_DIR + 'foto.heic') && (await j('/zdrowie')).b.narzedzia.heif) {
+    const heic = await wyslijPlikT(A.token, 'IMG_0001.HEIC', fs.readFileSync(KONW_DIR + 'foto.heic'), 'image/heic');
+    const film = await wyslijPlikT(A.token, 'IMG_0002.MOV', fs.readFileSync(KONW_DIR + 'film.mov'), 'video/quicktime');
+    const czekajNa = async (id, tok) => { let s3; for (let i = 0; i < 100; i++) { s3 = (await j(`/konwersja/${id}`, { method: i ? 'GET' : 'POST' }, tok)).b; if (s3.stan === 'gotowe' || s3.stan === 'blad') break; await new Promise((x) => setTimeout(x, 200)); } return s3; };
+    let s3 = await czekajNa(heic.id, B.token); assert.equal(s3.stan, 'gotowe'); assert.equal(s3.nazwa, 'IMG_0001.jpg');
+    f = await fetch(API + s3.url + '&pobierz=1'); const jb = Buffer.from(await f.arrayBuffer()); assert.equal(jb[0], 0xff); assert.equal(jb[1], 0xd8);
+    ok('zdjęcie HEIC przerobione na JPG');
+    await new Promise((x) => setTimeout(x, 800));
+    assert.equal((await j('/stan', {}, B.token)).b.rzeczy.find((x) => x.id === film.id).kodek, 'hevc'); ok('kodek filmu wykryty (HEVC)');
+    s3 = await czekajNa(film.id, B.token); assert.equal(s3.stan, 'gotowe'); assert.equal(s3.nazwa, 'IMG_0002.mp4');
+    f = await fetch(API + s3.url); const mp4 = path.join(KAT, 'w.mp4'); fs.writeFileSync(mp4, Buffer.from(await f.arrayBuffer()));
+    assert.equal(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', mp4]).toString().trim(), 'h264');
+    ok('film HEVC przerobiony na MP4 H.264');
+    s3 = (await j(`/konwersja/${p2.id}`, { method: 'POST' }, B.token)).b; assert.equal(s3.stan, 'niepotrzebna'); ok('zwykłe JPG nie są przerabiane');
+    r = await j('/linki', { method: 'POST', json: { ids: [heic.id] } }, A.token);
+    s3 = (await j(`/publiczne/${r.b.id}/konwersja/${heic.id}`, { method: 'POST' })).b; assert.equal(s3.stan, 'gotowe');
+    f = await fetch(API + s3.url + '?pobierz=1'); assert.equal(f.status, 200); ok('wersja zgodna dostępna też przez link dla innych');
+  } else console.log('  (pominięto konwersje — brak narzędzi lub plików testowych)');
+
   // blokada po 8 błędnych próbach
   for (let i = 0; i < 8; i++) await j('/polacz', { method: 'POST', json: { haslo: 'x' + i } });
   r = await j('/polacz', { method: 'POST', json: { haslo: 'Tajne Haslo 1' } }); assert.equal(r.s, 429); ok('blokada po 8 błędnych próbach');

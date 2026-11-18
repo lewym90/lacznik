@@ -45,6 +45,17 @@ WOLNE=$(df --output=avail -B1 / | tail -1)
 
 mkdir -p "$DIR" "$DANE"
 
+# --- narzędzia do wersji zgodnych (HEIC → JPG, filmy z iPhone'a → MP4); doinstalowywane tylko, jeśli ich brak ---
+BRAK=()
+command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || BRAK+=(ffmpeg)
+command -v heif-convert >/dev/null || BRAK+=(libheif-examples)
+if [ ${#BRAK[@]} -gt 0 ] || ! { dpkg -s libheif-plugin-libde265 >/dev/null 2>&1 || ! apt-cache show libheif-plugin-libde265 >/dev/null 2>&1; }; then
+  echo "Doinstalowuję narzędzia do zdjęć HEIC i filmów z iPhone'a (inne aplikacje ich nie tracą)..."
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-cache show libheif-plugin-libde265 >/dev/null 2>&1 && BRAK+=(libheif-plugin-libde265)
+  timeout 900 apt-get install -y -qq --no-install-recommends "${BRAK[@]}" >/dev/null 2>&1 || echo "UWAGA: nie udało się doinstalować: ${BRAK[*]} (Łącznik działa, tylko bez zamiany HEIC/filmów)"
+fi
+
 # --- własny Node (nie dotyka systemowego ani innych aplikacji) ---
 case "$(uname -m)" in x86_64) ARCH=x64 ;; aarch64|arm64) ARCH=arm64 ;; *) echo "STOP: nieznany procesor $(uname -m)"; exit 2 ;; esac
 NODE="$DIR/node/bin/node"
@@ -91,7 +102,7 @@ ProtectSystem=strict
 ReadWritePaths=$DANE
 ProtectHome=true
 PrivateTmp=true
-MemoryMax=300M
+MemoryMax=1200M
 [Install]
 WantedBy=multi-user.target
 EOF

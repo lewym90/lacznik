@@ -20,7 +20,14 @@
 
 - Zaszyfrowany ZIP (1.2.0): menu „…” → „Zaszyfruj i pobierz” dla pliku, grupy zdjęć albo folderu. Tryby nazwane przez właściciela: „Mocny” (AES-256, WinZip AE-2: PBKDF2-SHA1 1000, AES-CTR z licznikiem LE, HMAC-SHA1 10 B) i „Zgodny ze wszystkimi urządzeniami” (ZipCrypto, otwiera Eksplorator Windows). POST /zip-szyfrowany tworzy zlecenie w pamięci (hasło nigdzie niezapisywane, 10 min), GET /zip-szyfrowany/:id strumieniuje ZIP. CRC liczone przy każdej wysyłce pliku (stare pliki: przy pierwszym szyfrowaniu). Maks. 4 GB. Testy: zipfile (ZipCrypto) i pyzipper (AES).
 
+- 1.3.0 (wybrane przez właściciela z propozycji 1, 3, 4, 5):
+  - Link dla osób spoza domu: menu „…” → „Udostępnij link” (plik, zdjęcia, folder). Ważność 1 h / 1 dzień / 7 dni, opcja jednorazowy (po pierwszym pełnym pobraniu; przy wielu plikach tylko ZIP całości), opcjonalne hasło (scrypt, token 2 h). Tabela `linki`. Strona odbiorcy `link.html` + `js/link.js` (adres `…/link.html#ID`), API `/publiczne/:id/...`. Znaczek linku na karcie (pole `linki`).
+  - Dołączanie kodem: Ustawienia → „Dodaj urządzenie” → QR (`…/#dolacz=KOD`) i kod 8 znaków, ważny 10 min, wielokrotnego użytku (iPhone: Safari i aplikacja z ekranu mają osobną pamięć). Logowanie: „Mam kod z innego urządzenia”. QR: biblioteka qrcode-generator (MIT) w `js/qrcode.js`.
+  - Cofnij po usunięciu: brak pytania, rzecz znika od razu, DELETE po 6 s (albo natychmiast przy zamknięciu aplikacji, keepalive).
+  - Wersje zgodne: serwer przerabia HEIC → JPG (heif-convert, libheif + plugin libde265) i filmy HEVC z iPhone'a → MP4 H.264 do 1080p (ffmpeg, veryfast, CRF 22, nice 19, 1 film naraz). Kodek filmu wykrywany ffprobe po wysyłce (`kodek`). Na urządzeniach innych niż Apple HEIC pobiera się jako JPG; na komputerach (Windows/Linux) filmy HEVC jako MP4; w menu „Pobierz oryginał” / „Pobierz jako JPG/MP4”. Folder na laptopie: pytanie „Zamień na JPG i MP4” / „Zostaw oryginały”. Wyniki w /var/lib/lacznik/konwersje, kasowane z rzeczą. Usługa ma MemoryMax=1200M (ffmpeg). Filmy HDR po zamianie mogą mieć nieco bledsze kolory (bez mapowania tonów).
+
 ## Stan
 - 1.0.0: pierwsza wersja, serwer zainstalowany przez właściciela.
+- 1.3.0: link dla innych, dołączanie kodem QR, cofnij usunięcie, wersje zgodne JPG/MP4.
 - 1.2.0: zaszyfrowany ZIP (mocny / zgodny ze wszystkimi urządzeniami).
 - 1.1.0: foldery (wysyłanie przez „+ → Cały folder” albo przeciągnięcie, jedna karta z listą plików, pobieranie folderu albo ZIP), usunięta instrukcja Skrótu iOS. Aktualizacja serwera tą samą komendą instalacyjną.

@@ -1,5 +1,5 @@
 // Łącznik — aplikacja. Bez bibliotek.
-const WERSJA = '1.2.0';
+const WERSJA = '1.3.0';
 const API = (localStorage.getItem('lacznik.api') || 'https://188-68-247-201.sslip.io/lacznik-api').replace(/\/+$/, '');
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
@@ -79,6 +79,14 @@ const ikUrz = (typ) => ({ iphone: 'telefon', android: 'telefon', ipad: 'tablet',
 const jestMedia = (r) => r.rodzaj === 'plik' && /^(image|video)\//.test(r.mime || '');
 const dzieci = (f) => S.rzeczy.filter((x) => x.folder === f.id).sort((a, b) => String(a.sciezka).localeCompare(String(b.sciezka), 'pl'));
 const jestFilm = (r) => /^video\//.test(r.mime || '');
+const jestApple = iOS || /Macintosh/.test(navigator.userAgent);
+const naKomputerze = /Windows|Linux|CrOS/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+const jestHeic = (r) => /^image\/hei[cf]$/.test(r.mime || '');
+// czy na tym urządzeniu lepiej pobrać wersję zgodną (HEIC → JPG, film HEVC z iPhone'a → MP4)
+const potrzebaZgodnej = (r) => r.rodzaj === 'plik' && ((!jestApple && jestHeic(r)) || (naKomputerze && /^video\//.test(r.mime || '') && (r.kodek === 'hevc' || (!r.kodek && /quicktime/.test(r.mime)))));
+const mozeZgodna = (r) => r.rodzaj === 'plik' && !jestApple && (jestHeic(r) || (/^video\//.test(r.mime || '') && r.kodek !== 'h264'));
+const adresAplikacji = () => location.origin + location.pathname.replace(/[^/]*$/, '');
+function qrSvg(tekst) { const q = window.qrcode(0, 'M'); q.addData(tekst); q.make(); return q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); }
 const wyswietlalny = (r) => /^image\/(jpeg|png|gif|webp|avif)$/.test(r.mime) || (iOS && /^image\/hei[cf]$/.test(r.mime));
 const url = (p) => API + p;
 
@@ -107,10 +115,11 @@ async function api(sciezka, { metoda = 'GET', json, cialo, sygnal } = {}) {
 }
 
 let komTimer;
-function komunikat(t, ikona = 'ok', czas = 2600) {
+function komunikat(t, ikona = 'ok', czas = 2600, akcja = null) {
   document.querySelectorAll('.komunikat').forEach((k) => k.remove());
   const el = document.createElement('div'); el.className = 'komunikat'; el.setAttribute('role', 'status');
-  el.innerHTML = `${ik(ikona)}<span>${esc(t)}</span>`; document.body.append(el);
+  el.innerHTML = `${ik(ikona)}<span>${esc(t)}</span>${akcja ? `<button type="button" class="kom-akcja">${esc(akcja.tekst)}</button>` : ''}`; document.body.append(el);
+  if (akcja) el.querySelector('.kom-akcja').onclick = () => { el.remove(); akcja.fn(); };
   clearTimeout(komTimer); if (czas) komTimer = setTimeout(() => el.remove(), czas);
   return el;
 }
@@ -121,7 +130,7 @@ async function kopiuj(t, co = 'Skopiowano') {
 }
 
 // ---------- logowanie ----------
-function ekranLogowania(blad = '') {
+function ekranLogowania(blad = '', trybKod = false, kodStart = '') {
   zamknijNaZywo();
   const u = wykryjUrzadzenie();
   app.innerHTML = `
@@ -131,28 +140,35 @@ function ekranLogowania(blad = '') {
       <div class="znak"><div class="logo" aria-hidden="true"></div><h1 class="napis" style="margin:0">Łącznik</h1></div>
       <p class="podtytul">Twoje rzeczy od razu na każdym urządzeniu</p>
       ${blad ? `<div class="blad" role="alert">${esc(blad)}</div>` : ''}
-      <div class="pole"><label for="haslo">Hasło</label>
+      ${trybKod ? `<div class="pole"><label for="kod">Kod z innego urządzenia</label>
+        <input class="wej" id="kod" type="text" inputmode="text" autocapitalize="characters" autocomplete="one-time-code" maxlength="9" placeholder="ABCD-EFGH" value="${esc(kodStart)}" style="letter-spacing:.14em;font-weight:800;text-transform:uppercase;font-size:20px"></div>`
+      : `<div class="pole"><label for="haslo">Hasło</label>
         <div class="wej-z-ik"><input class="wej" id="haslo" type="password" autocomplete="current-password" required autofocus>
-        <button type="button" class="ikb bez" id="pokaz" aria-label="Pokaż hasło">${ik('oko')}</button></div></div>
+        <button type="button" class="ikb bez" id="pokaz" aria-label="Pokaż hasło">${ik('oko')}</button></div></div>`}
       <div class="pole"><label for="nazwa">Nazwa tego urządzenia</label>
         <input class="wej" id="nazwa" type="text" maxlength="40" value="${esc(u.nazwa)}" autocomplete="off"></div>
       <button class="p glowny" type="submit" id="polacz">Połącz to urządzenie</button>
+      <button class="p cichy" type="button" id="zmien-tryb">${trybKod ? 'Mam hasło' : 'Mam kod z innego urządzenia'}</button>
     </form>
   </main>`;
-  $('#pokaz').onclick = () => { const h = $('#haslo'); h.type = h.type === 'password' ? 'text' : 'password'; };
+  if ($('#pokaz')) $('#pokaz').onclick = () => { const h = $('#haslo'); h.type = h.type === 'password' ? 'text' : 'password'; };
+  $('#zmien-tryb').onclick = () => ekranLogowania('', !trybKod);
+  if (trybKod) setTimeout(() => (kodStart ? $('#nazwa') : $('#kod')).focus(), 50);
   $('#f-log').onsubmit = async (e) => {
     e.preventDefault();
-    const haslo = $('#haslo').value; if (!haslo) return $('#haslo').focus();
+    const haslo = trybKod ? '' : $('#haslo').value, kod = trybKod ? $('#kod').value.trim() : '';
+    if (!haslo && !kod) return (trybKod ? $('#kod') : $('#haslo')).focus();
     const b = $('#polacz'); b.disabled = true; b.textContent = 'Łączę…';
     try {
       const r = await fetch(url('/polacz'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ haslo, nazwa: $('#nazwa').value.trim() || u.nazwa, typ: u.typ }) });
+        body: JSON.stringify({ ...(kod ? { kod } : { haslo }), nazwa: $('#nazwa').value.trim() || u.nazwa, typ: u.typ }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.blad || 'Nie udało się połączyć.');
       S.token = d.token; S.ja = { id: d.id, nazwa: d.nazwa, typ: d.typ };
       localStorage.setItem('lacznik.token', d.token); localStorage.setItem('lacznik.ja', JSON.stringify(S.ja));
+      if (location.hash) history.replaceState(null, '', location.pathname);
       start();
-    } catch (er) { ekranLogowania(er.message === 'Failed to fetch' ? 'Brak połączenia z serwerem.' : er.message); }
+    } catch (er) { ekranLogowania(er.message === 'Failed to fetch' ? 'Brak połączenia z serwerem.' : er.message, trybKod, kod); }
   };
 }
 function wyloguj(powod = '') {
@@ -253,6 +269,7 @@ function stopka(r, el = [r]) {
 }
 const glowa = (rodzaj, tytul, r) => `<div class="glowa"><div class="znaczek ${rodzaj}">${ik(rodzaj === 'foto' && jestFilm(r) ? 'film' : rodzaj)}</div>
   <div class="opis"><div class="tyt">${tytul}</div><div class="meta">${meta(r)}</div></div>
+  ${r.linki ? `<span class="przyp" aria-label="Udostępnione linkiem" title="Udostępnione linkiem">${ik('link')}</span>` : ''}
   ${r.przypiete ? `<span class="przyp" aria-label="Przypięte">${ik('pinezka')}</span>` : ''}
   <button class="ikb bez" data-a="menu" data-id="${r.id}" aria-label="Więcej opcji">${ik('wiecej')}</button></div>`;
 
@@ -423,7 +440,7 @@ function rysujPodglad() {
   }
   const odeb = Object.entries(g.el.reduce((a, x) => Object.assign(a, x.odebrane || {}), {})).map(([id, t]) => `${esc(nazwaUrz(Number(id)))} ${gg(new Date(t))}`).join(' · ');
   p.innerHTML = `<div class="etyk">Podgląd</div>${duzy}<div class="nazwa">${nazwa}</div>${r.rodzaj === 'plik' ? `<div class="meta">${rozmiar(g.el.reduce((a, x) => a + x.rozmiar, 0))}</div>` : ''}
-    <div class="akcje">${akcje}${r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy) ? `<button class="p" data-a="szyfruj" data-id="${r.id}">${ik('klodka')}Zaszyfruj</button>` : ''}<button class="p" data-a="przypnij" data-id="${r.id}">${ik('pinezka')}${r.przypiete ? 'Odepnij' : 'Przypnij'}</button>
+    <div class="akcje">${akcje}${r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy) ? `<button class="p" data-a="link-dla" data-id="${r.id}">${ik('link')}Link</button><button class="p" data-a="szyfruj" data-id="${r.id}">${ik('klodka')}Zaszyfruj</button>` : ''}<button class="p" data-a="przypnij" data-id="${r.id}">${ik('pinezka')}${r.przypiete ? 'Odepnij' : 'Przypnij'}</button>
     <button class="p uwaga" data-a="usun" data-id="${r.id}">${ik('kosz')}Usuń</button></div>
     <div class="fakty"><div class="fakt"><span>Od</span><span>${esc(r.odNazwa)} · ${gg(new Date(r.utworzone))}</span></div>
     <div class="fakt"><span>Do</span><span>${esc(r.do == null ? 'Wszystkie urządzenia' : nazwaUrz(r.do))}</span></div>
@@ -449,7 +466,7 @@ function oznaczOdebrane() {
 async function wczytajStan() {
   const s = await api('/stan');
   S.ja = s.ja; localStorage.setItem('lacznik.ja', JSON.stringify(s.ja));
-  S.urzadzenia = s.urzadzenia; S.rzeczy = s.rzeczy; S.miejsce = s.miejsce; S.vapid = s.vapid; S.zaladowano = true;
+  S.urzadzenia = s.urzadzenia; S.rzeczy = s.rzeczy.filter((x) => !ukryte.has(x.id) && !ukryte.has(x.folder)); S.miejsce = s.miejsce; S.vapid = s.vapid; S.zaladowano = true;
   rysuj(); odnowPush();
 }
 function zamknijNaZywo() { if (zrodlo) { zrodlo.close(); zrodlo = null; } }
@@ -463,7 +480,8 @@ function naZywo() {
     if (es.readyState === EventSource.CLOSED) setTimeout(() => { if (zrodlo === es && S.token) { wczytajStan().then(naZywo).catch(() => setTimeout(naZywo, 5000)); } }, 3000);
   };
   es.addEventListener('rzecz', (e) => {
-    const r = JSON.parse(e.data); const i = S.rzeczy.findIndex((x) => x.id === r.id);
+    const r = JSON.parse(e.data); if (ukryte.has(r.id) || ukryte.has(r.folder)) return;
+    const i = S.rzeczy.findIndex((x) => x.id === r.id);
     if (i >= 0) S.rzeczy[i] = r;
     else {
       S.rzeczy.push(r);
@@ -671,9 +689,21 @@ function pobierzZip(f) {
   const a = document.createElement('a'); a.href = url(f.zip); a.download = f.nazwa + '.zip'; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove();
   if (iOS) komunikat('Folder przyjdzie jako ZIP. W Plikach stuknij go, rozpakuje się sam.', 'folder', 6000);
 }
-async function pobierzFolder(f) {
+function pobierzFolder(f) {
   const d = dzieci(f);
   if (!umieFolder()) return pobierzZip(f);
+  const doZamiany = d.filter(potrzebaZgodnej);
+  if (!doZamiany.length) return zapiszFolder(f, false);
+  const zdj = doZamiany.filter((x) => !jestFilm(x)).length, fil = doZamiany.length - zdj;
+  const co = [zdj ? `${zdj} ${odmiana(zdj, 'zdjęcie HEIC', 'zdjęcia HEIC', 'zdjęć HEIC')}` : '', fil ? `${fil} ${odmiana(fil, 'film', 'filmy', 'filmów')} z iPhone'a` : ''].filter(Boolean).join(' i ');
+  const z = arkusz(`<h2>Pobierz folder</h2><p>W folderze jest ${co}. Na tym urządzeniu mogą się nie otworzyć.</p>
+    <div class="lista-op" style="margin-top:12px">
+      <button class="op" data-z="tak"><span class="znaczek">${ik('ok')}</span><span class="t"><b>Zamień na JPG i MP4</b><span>Polecane. Otworzą się wszędzie${fil ? ', filmy mogą chwilę potrwać' : ''}.</span></span></button>
+      <button class="op" data-z="nie"><span class="znaczek">${ik('folder')}</span><span class="t"><b>Zostaw oryginały</b><span>Dokładnie takie pliki, jakie wysłano</span></span></button></div>`);
+  z.addEventListener('click', (e) => { const w = e.target.closest('[data-z]')?.dataset.z; if (!w) return; z._zamknij(); zapiszFolder(f, w === 'tak'); });
+}
+async function zapiszFolder(f, zamien) {
+  const d = dzieci(f);
   let kat;
   try { kat = await window.showDirectoryPicker({ id: 'lacznik', mode: 'readwrite', startIn: 'downloads' }); }
   catch (e) { if (e.name === 'AbortError') return; return pobierzZip(f); }
@@ -686,8 +716,15 @@ async function pobierzFolder(f) {
     for (const x of d) {
       const sc = (x.sciezka || x.nazwa).split('/'); let k = cel;
       for (const s of sc.slice(0, -1)) k = await k.getDirectoryHandle(s, { create: true });
-      const uchwyt = await k.getFileHandle(sc[sc.length - 1], { create: true });
-      const odp = await fetch(url(x.plik)); if (!odp.ok) throw new Error(`nie udało się pobrać ${x.nazwa}`);
+      let zrodlo = url(x.plik), nazwaPl = sc[sc.length - 1];
+      if (zamien && potrzebaZgodnej(x)) {
+        try {
+          const w = await wersjaZgodna(x, (s) => { kom.querySelector('span').textContent = `Pobieram „${f.nazwa}” · ${ile + 1} z ${d.length} · przerabiam ${coPrzerabiam(x)} ${Math.round((s.postep || 0) * 100)}%`; });
+          if (w) { zrodlo = w.url; nazwaPl = w.nazwa; }
+        } catch { /* zostaje oryginał */ }
+      }
+      const uchwyt = await k.getFileHandle(nazwaPl, { create: true });
+      const odp = await fetch(zrodlo); if (!odp.ok) throw new Error(`nie udało się pobrać ${x.nazwa}`);
       await odp.body.pipeTo(await uchwyt.createWritable());
       kom.querySelector('span').textContent = `Pobieram „${f.nazwa}” · ${++ile} z ${d.length}`;
     }
@@ -705,20 +742,40 @@ async function blob(r) {
   const odp = await fetch(url(r.plik)); if (!odp.ok) throw new Error('Nie udało się pobrać pliku.');
   const b = await odp.blob(); bloby.set(r.id, b); return b;
 }
+async function wersjaZgodna(r, postep) {
+  let s = await api(`/konwersja/${r.id}`, { metoda: 'POST' });
+  while (s.stan === 'czeka' || s.stan === 'trwa') { postep?.(s); await czekaj(1200); s = await api(`/konwersja/${r.id}`); }
+  if (s.stan === 'gotowe') return { url: url(s.url), nazwa: s.nazwa, mime: s.mime };
+  if (s.stan === 'niepotrzebna') return null;
+  throw new Error(s.blad || 'Nie udało się przygotować wersji zgodnej.');
+}
+const coPrzerabiam = (r) => (jestFilm(r) ? 'film' : 'zdjęcie');
+async function pobierzZgodny(r) {
+  const k = komunikat(`Przygotowuję ${coPrzerabiam(r)} dla tego urządzenia…`, 'pobierz', 0);
+  try {
+    const w = await wersjaZgodna(r, (s) => { const sp = k.querySelector('span'); if (sp) sp.textContent = `Przygotowuję ${coPrzerabiam(r)} dla tego urządzenia · ${Math.round((s.postep || 0) * 100)}%`; });
+    k.remove();
+    if (!w) return pobierzLinkiem(r);
+    const a = document.createElement('a'); a.href = w.url + '&pobierz=1'; a.download = w.nazwa; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove();
+  } catch (e) { k.remove(); komunikat(`${e.message} Pobieram oryginał.`, 'x', 4000); pobierzLinkiem(r); }
+}
 function pobierzLinkiem(r) { const a = document.createElement('a'); a.href = url(r.plik) + '&pobierz=1'; a.download = r.nazwa; a.rel = 'noopener'; document.body.append(a); a.click(); a.remove(); }
 async function zapisz(rzeczy) {
   if (navigator.canShare && (iOS || dotyk)) {
     const gotowe = rzeczy.every((r) => bloby.has(r.id));
     try {
       if (!gotowe) komunikat('Przygotowuję…', 'pobierz');
-      const pliki = await Promise.all(rzeczy.map(async (r) => new File([await blob(r)], r.nazwa, { type: r.mime })));
+      const pliki = await Promise.all(rzeczy.map(async (r) => {
+        if (potrzebaZgodnej(r)) { const w = await wersjaZgodna(r).catch(() => null); if (w) return new File([await (await fetch(w.url)).blob()], w.nazwa, { type: w.mime }); }
+        return new File([await blob(r)], r.nazwa, { type: r.mime });
+      }));
       if (navigator.canShare({ files: pliki })) {
         try { await navigator.share({ files: pliki }); return; }
         catch (e) { if (e.name === 'AbortError') return; if (e.name === 'NotAllowedError') { komunikat('Gotowe — stuknij „Zapisz” jeszcze raz', 'ok'); return; } }
       }
     } catch (e) { komunikat(e.message, 'x'); return; }
   }
-  rzeczy.forEach((r, i) => setTimeout(() => pobierzLinkiem(r), i * 400));
+  for (const r of rzeczy) { if (potrzebaZgodnej(r)) await pobierzZgodny(r); else pobierzLinkiem(r); await czekaj(400); }
 }
 
 // ---------- przeglądarka zdjęć i filmów ----------
@@ -738,6 +795,7 @@ function przegladaj(grupaKlucz, id, folderId) {
       ${g.el.length > 1 && !dotyk ? `<button class="ikb str l" data-p="poprz" aria-label="Poprzednie">${ik('lewo')}</button><button class="ikb str p2" data-p="nast" aria-label="Następne">${ik('prawo')}</button>` : ''}
       <div class="pas d"><button class="p glowny" data-p="zapisz">${ik(iOS ? 'udostepnij' : 'pobierz')}${iOS ? 'Zapisz' : 'Pobierz'}</button></div>`;
     if (iOS) blob(r).catch(() => {});
+    if (!jestApple && jestHeic(r)) wersjaZgodna(r).then((w) => { const im = el.querySelector('.scena img'); if (w && im && g.el[i] === r) im.src = w.url; }).catch(() => {});
   };
   const zamknij = () => { el.remove(); document.removeEventListener('keydown', klaw); };
   const idz = (d) => { if (g.el.length > 1) { i = (i + d + g.el.length) % g.el.length; pokaz(); } };
@@ -823,6 +881,77 @@ function arkuszSzyfruj(el) {
     } catch (er) { b.disabled = false; b.innerHTML = `${ik('klodka')}Zaszyfruj i pobierz`; blad(er.message); }
   });
 }
+const GODZ = [[1, '1 godzina'], [24, '1 dzień'], [168, '7 dni']];
+function arkuszLinku(el) {
+  const tytul = el.length === 1 ? el[0].nazwa : opisMediow(el);
+  let godz = 24, jednoraz = false;
+  const z = arkusz(`<h2>Udostępnij link</h2><p>${esc(tytul)} · link dla kogoś, kto nie ma Łącznika.</p>
+    <form id="f-link" novalidate style="display:flex;flex-direction:column;gap:16px;margin-top:14px">
+      <div class="pole"><span style="font-size:13px;font-weight:650;color:var(--szary)">Ważny przez</span>
+        <div class="chipy" style="margin:0;padding:0;flex-wrap:wrap" role="radiogroup" aria-label="Ważność">${GODZ.map(([g, n]) => `<button type="button" class="chip" role="radio" data-g="${g}" aria-pressed="${g === godz}" aria-checked="${g === godz}">${n}</button>`).join('')}</div></div>
+      <label class="przelacznik"><input type="checkbox" id="l-jedn"><span class="tor" aria-hidden="true"></span><span class="t"><b>Jednorazowy</b><span>Przestanie działać po pierwszym pobraniu${el.length > 1 || el[0].rodzaj === 'folder' ? ' (pobierze się całość jako ZIP)' : ''}</span></span></label>
+      <div class="pole"><label for="l-haslo">Hasło (nieobowiązkowe)</label><input class="wej" id="l-haslo" type="text" autocomplete="off" placeholder="Bez hasła"></div>
+      <div id="l-blad"></div>
+      <button class="p glowny" type="submit" id="l-ok" style="height:50px">${ik('link')}Utwórz link</button>
+    </form><div id="l-wynik"></div><div id="l-aktywne"></div>`);
+  const aktywne = async () => {
+    try {
+      const { linki } = await api(`/linki?rzecz=${encodeURIComponent(el[0].id)}`);
+      const box = z.querySelector('#l-aktywne'); if (!box) return;
+      box.innerHTML = linki.length ? `<h3>Aktywne linki</h3>${linki.map((l) => `<div class="wiersz-ust"><span class="znaczek" style="background:var(--pow2);color:var(--szary);border:1px solid var(--linia)">${ik('link')}</span>
+        <div class="t"><b>${l.jednorazowy ? 'Jednorazowy' : 'Zwykły'}${l.haslo ? ' · z hasłem' : ''}</b><span>Wygaśnie ${kiedyDo(l.wygasa)} · pobrania: ${l.pobrania}</span></div>
+        <button class="p maly uwaga" data-l="${l.id}">Wyłącz</button></div>`).join('')}` : '';
+    } catch {}
+  };
+  aktywne();
+  z.addEventListener('click', async (e) => {
+    const g = e.target.closest('[data-g]');
+    if (g) { godz = Number(g.dataset.g); z.querySelectorAll('[data-g]').forEach((b) => { const on = Number(b.dataset.g) === godz; b.setAttribute('aria-pressed', on); b.setAttribute('aria-checked', on); }); }
+    const off = e.target.closest('[data-l]');
+    if (off) { off.disabled = true; try { await api(`/linki/${off.dataset.l}`, { metoda: 'DELETE' }); komunikat('Link wyłączony', 'link'); aktywne(); } catch (er) { komunikat(er.message, 'x'); } }
+    const k = e.target.closest('[data-kop]'); if (k) kopiuj(k.dataset.kop, 'Link skopiowany');
+    const sh = e.target.closest('[data-udost]'); if (sh) navigator.share?.({ url: sh.dataset.udost }).catch(() => {});
+  });
+  z.querySelector('#f-link').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const haslo = z.querySelector('#l-haslo').value; jednoraz = z.querySelector('#l-jedn').checked;
+    if (haslo && haslo.length < 4) { z.querySelector('#l-blad').innerHTML = '<div class="blad" role="alert">Hasło musi mieć co najmniej 4 znaki.</div>'; return; }
+    const b = z.querySelector('#l-ok'); b.disabled = true;
+    try {
+      const l = await api('/linki', { metoda: 'POST', json: { ids: el.map((x) => x.id), godziny: godz, jednorazowy: jednoraz, haslo: haslo || undefined } });
+      const adres = `${adresAplikacji()}link.html#${l.id}`;
+      z.querySelector('#f-link').remove();
+      z.querySelector('#l-wynik').innerHTML = `<div class="qr-ramka">${qrSvg(adres)}</div>
+        <div class="kopiuj-pole"><code>${esc(adres)}</code></div>
+        <div class="akcje" style="justify-content:stretch">
+          <button class="p glowny" data-kop="${esc(adres)}" style="flex:1">${ik('kopiuj')}Kopiuj link</button>
+          ${navigator.share ? `<button class="p" data-udost="${esc(adres)}" style="flex:1">${ik('udostepnij')}Wyślij</button>` : ''}</div>
+        <p style="font-size:13px">Ważny ${GODZ.find((x) => x[0] === godz)[1].replace('1 godzina', 'godzinę').replace('1 dzień', 'dzień')}${jednoraz ? ', jednorazowy' : ''}${haslo ? ', z hasłem. Hasło przekaż osobno, nie w tej samej wiadomości.' : '.'} Osoba z drugiej strony może też zeskanować kod aparatem.</p>`;
+      const r0 = S.rzeczy.find((x) => x.id === el[0].id); if (r0) { r0.linki = (r0.linki || 0) + 1; rysuj(); }
+      aktywne();
+    } catch (er) { b.disabled = false; z.querySelector('#l-blad').innerHTML = `<div class="blad" role="alert">${esc(er.message)}</div>`; }
+  });
+}
+function kiedyDo(t) {
+  const r = t - Date.now();
+  if (r < 3600e3) return `za ${Math.max(1, Math.round(r / 60e3))} min`;
+  if (r < 48 * 3600e3) { const h = Math.round(r / 3600e3); return `za ${h} ${odmiana(h, 'godzinę', 'godziny', 'godzin')}`; }
+  const d = Math.round(r / 86400e3); return `za ${d} ${odmiana(d, 'dzień', 'dni', 'dni')}`;
+}
+async function arkuszKoduQR() {
+  let z;
+  try {
+    const { kod, wygasa } = await api('/zaproszenie', { metoda: 'POST' });
+    const adres = `${adresAplikacji()}#dolacz=${kod}`;
+    z = arkusz(`<h2>Dodaj urządzenie</h2>
+      <p>Na nowym urządzeniu zeskanuj ten kod aparatem albo otwórz Łącznik, wybierz „Mam kod z innego urządzenia” i wpisz:</p>
+      <div class="qr-ramka">${qrSvg(adres)}</div>
+      <div class="kod-duzy">${esc(kod)}</div>
+      <p style="text-align:center;font-size:13px" id="qr-czas"></p>`);
+    const odlicz = () => { const e = z.querySelector('#qr-czas'); if (!e || !document.body.contains(e)) return clearInterval(tm); const s = Math.max(0, Math.round((wygasa - Date.now()) / 1000)); e.textContent = s ? `Kod działa jeszcze ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}. Możesz nim połączyć kilka urządzeń.` : 'Kod wygasł. Zamknij i wygeneruj nowy.'; };
+    const tm = setInterval(odlicz, 1000); odlicz();
+  } catch (e) { komunikat(e.message, 'x'); }
+}
 function arkuszDodaj() {
   const z = arkusz(`<h2>Dodaj</h2><div class="lista-op" style="margin-top:12px">
     <button class="op" data-d="pliki"><span class="znaczek">${ik('foto')}</span><span class="t"><b>Zdjęcia i pliki</b><span>Jedno albo wiele naraz</span></span></button>
@@ -854,6 +983,10 @@ function menuRzeczy(r, poAkcji) {
       ${tekst ? `<button class="op" data-m="kopiuj"><span class="znaczek">${ik('kopiuj')}</span><span class="t"><b>Kopiuj</b></span></button>` : ''}
       ${r.rodzaj === 'folder' && r.gotowy ? `<button class="op" data-m="folder"><span class="znaczek">${ik('pobierz')}</span><span class="t"><b>Pobierz folder</b><span>${opisFolderu(r)}${umieFolder() ? '' : ' · jako ZIP'}</span></span></button>` : ''}
       ${r.rodzaj === 'plik' ? `<button class="op" data-m="zapisz"><span class="znaczek">${ik(iOS ? 'udostepnij' : 'pobierz')}</span><span class="t"><b>${iOS ? 'Zapisz lub udostępnij' : 'Pobierz'}</b><span>${rozmiar(el.reduce((a, x) => a + x.rozmiar, 0))}</span></span></button>` : ''}
+      ${(r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy)) ? `<button class="op" data-m="link"><span class="znaczek">${ik('link')}</span><span class="t"><b>Udostępnij link</b><span>${r.linki ? `Aktywne linki: ${r.linki}` : 'Dla kogoś spoza domu, bez Łącznika'}</span></span></button>` : ''}
+      ${el.length === 1 && mozeZgodna(r) ? (potrzebaZgodnej(r)
+        ? `<button class="op" data-m="oryginal"><span class="znaczek">${ik('pobierz')}</span><span class="t"><b>Pobierz oryginał</b><span>${jestFilm(r) ? 'Film z iPhone\'a może się tu nie odtworzyć' : 'Zdjęcie HEIC może się tu nie otworzyć'}</span></span></button>`
+        : `<button class="op" data-m="zgodna"><span class="znaczek">${ik('pobierz')}</span><span class="t"><b>Pobierz jako ${jestFilm(r) ? 'MP4' : 'JPG'}</b><span>Wersja, która otworzy się wszędzie</span></span></button>`) : ''}
       ${(r.rodzaj === 'plik' || (r.rodzaj === 'folder' && r.gotowy)) ? `<button class="op" data-m="szyfruj"><span class="znaczek">${ik('klodka')}</span><span class="t"><b>Zaszyfruj i pobierz</b><span>ZIP zabezpieczony hasłem</span></span></button>` : ''}
       <button class="op" data-m="przypnij"><span class="znaczek">${ik('pinezka')}</span><span class="t"><b>${r.przypiete ? 'Odepnij' : 'Przypnij'}</b><span>${r.przypiete ? 'Wróci do zwykłego znikania' : 'Zostanie na stałe, nie zniknie sama'}</span></span></button>
       <button class="op" data-m="usun" style="color:var(--czerwony)"><span class="znaczek" style="color:var(--czerwony)">${ik('kosz')}</span><span class="t"><b>Usuń ze wszystkich urządzeń</b>${r.rodzaj === 'folder' ? `<span>Razem ze wszystkimi plikami w środku</span>` : ''}</span></button>
@@ -865,20 +998,44 @@ function menuRzeczy(r, poAkcji) {
     if (m === 'zapisz') zapisz(el);
     if (m === 'folder') pobierzFolder(r);
     if (m === 'szyfruj') arkuszSzyfruj(el);
+    if (m === 'link') arkuszLinku(el);
+    if (m === 'oryginal') pobierzLinkiem(r);
+    if (m === 'zgodna') pobierzZgodny(r);
     if (m === 'przypnij') przypnij(el, !r.przypiete);
-    if (m === 'usun') { if (await usun(el)) poAkcji?.(); }
+    if (m === 'usun') { usun(el); poAkcji?.(); }
   });
 }
 async function przypnij(el, tak) {
   try { for (const r of el) { const n = await api(`/rzeczy/${r.id}`, { metoda: 'PATCH', json: { przypiete: tak } }); const i = S.rzeczy.findIndex((x) => x.id === n.id); if (i >= 0) S.rzeczy[i] = n; } rysuj(); komunikat(tak ? 'Przypięte' : 'Odpięte', 'pinezka'); }
   catch (e) { komunikat(e.message, 'x'); }
 }
-async function usun(el) {
-  const ok = await potwierdz('Usunąć?', el.length > 1 ? `${opisMediow(el)} zniknie ze wszystkich urządzeń.` : 'Zniknie ze wszystkich urządzeń.', 'Usuń');
-  if (!ok) return false;
-  try { for (const r of el) { await api(`/rzeczy/${r.id}`, { metoda: 'DELETE' }); S.rzeczy = S.rzeczy.filter((x) => x.id !== r.id); } S.wybrana = null; rysuj(); komunikat('Usunięte', 'kosz'); return true; }
-  catch (e) { komunikat(e.message, 'x'); return false; }
+// usuwanie z „Cofnij”: rzecz znika od razu, a serwer dostaje polecenie dopiero po 6 sekundach
+const ukryte = new Set(), oczekujace = new Map(); let licznikUs = 0;
+function usun(el) {
+  const ids = el.map((r) => r.id);
+  const zapas = S.rzeczy.filter((x) => ids.includes(x.id) || ids.includes(x.folder));
+  ids.forEach((id) => ukryte.add(id));
+  S.rzeczy = S.rzeczy.filter((x) => !zapas.includes(x));
+  S.wybrana = null; rysuj();
+  const klucz = ++licznikUs;
+  const wykonaj = () => {
+    if (!oczekujace.has(klucz)) return; oczekujace.delete(klucz); clearTimeout(t);
+    for (const id of ids) fetch(url(`/rzeczy/${id}`), { method: 'DELETE', headers: { Authorization: `Bearer ${S.token}` }, keepalive: true }).catch(() => {}).finally(() => ukryte.delete(id));
+  };
+  oczekujace.set(klucz, wykonaj);
+  const t = setTimeout(wykonaj, 6000);
+  const opis = el.length > 1 ? `Usunięto: ${opisMediow(el)}` : el[0].rodzaj === 'folder' ? `Usunięto folder „${el[0].nazwa}”` : 'Usunięto';
+  komunikat(opis, 'kosz', 6000, { tekst: 'Cofnij', fn: () => {
+    if (!oczekujace.has(klucz)) return; oczekujace.delete(klucz); clearTimeout(t);
+    ids.forEach((id) => ukryte.delete(id));
+    for (const z of zapas) if (!S.rzeczy.some((x) => x.id === z.id)) S.rzeczy.push(z);
+    rysuj(); komunikat('Przywrócone', 'ok');
+  } });
+  return true;
 }
+const wykonajOczekujace = () => { for (const f of [...oczekujace.values()]) f(); };
+window.addEventListener('pagehide', wykonajOczekujace);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') wykonajOczekujace(); });
 
 // ---------- powiadomienia ----------
 const b64u8 = (s) => { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
@@ -920,6 +1077,8 @@ function arkuszUstawien(odswiez = false) {
       <div class="t"><b>${pushTu ? 'Włączone na tym urządzeniu' : 'Wyłączone na tym urządzeniu'}</b><span>Gdy Łącznik jest zamknięty, dostaniesz powiadomienie o nowej rzeczy.</span></div>
       ${pushTu ? `<button class="p maly" data-u="test-push">Wyślij próbne</button>` : `<button class="p maly glowny" data-u="push">Włącz</button>`}</div>
     <h3>Urządzenia</h3>${urz}
+    <div class="wiersz-ust"><span class="znaczek" style="background:var(--miekki);color:var(--akcent)">${ik('plus')}</span>
+      <div class="t"><b>Dodaj urządzenie</b><span>Kod QR zamiast wpisywania hasła</span></div><button class="p maly glowny" data-u="qr">Pokaż kod</button></div>
     ${instal}
     <h3>To urządzenie</h3>
     <div class="wiersz-ust"><div class="t"><b>Rozłącz to urządzenie</b><span>Żeby wrócić, wpiszesz hasło jeszcze raz.</span></div><button class="p maly uwaga" data-u="wyloguj">${ik('wyloguj')}Rozłącz</button></div>
@@ -929,6 +1088,7 @@ function arkuszUstawien(odswiez = false) {
   z.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-u]'); if (!b) return; const u = b.dataset.u;
     if (u === 'kop') return kopiuj(b.dataset.t);
+    if (u === 'qr') return arkuszKoduQR();
     if (u === 'push') { b.disabled = true; try { if (await wlaczPowiadomienia()) await wczytajStan(); } catch (er) { komunikat(er.message, 'x'); } arkuszUstawien(true); }
     if (u === 'test-push') { try { await api('/push/test', { metoda: 'POST' }); komunikat('Wysłano próbne powiadomienie', 'dzwonek'); } catch (er) { komunikat(er.message, 'x'); } }
     if (u === 'klucz') { try { const r = await api('/klucz-skrotu', { metoda: 'POST', json: { nazwa: `${S.ja.nazwa} (Skrót)` } }); kluczSkrotu = r.klucz; arkuszUstawien(true); } catch (er) { komunikat(er.message, 'x'); } }
@@ -982,6 +1142,7 @@ function podepnijZdarzenia() {
     else if (a === 'dodaj-plik') arkuszDodaj();
     else if (a === 'pokaz-pliki') { const l = b.closest('.karta').querySelector('.lista-w-folderze'); l.classList.toggle('ukryte'); b.textContent = l.classList.contains('ukryte') ? 'Pokaż pliki' : 'Ukryj pliki'; }
     else if (a === 'pobierz-folder' && r) pobierzFolder(r);
+    else if (a === 'link-dla' && r) { const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id)); arkuszLinku(g?.typ === 'media' ? g.el : [r]); }
     else if (a === 'szyfruj' && r) { const g = grupuj(widoczneRzeczy()).find((x) => x.el.some((y) => y.id === r.id)); arkuszSzyfruj(g?.typ === 'media' ? g.el : [r]); }
     else if (a === 'usun-zal') { const [z] = S.zalaczniki.splice(Number(b.dataset.i), 1); if (z?.podglad) URL.revokeObjectURL(z.podglad); odswiezPisanie(); }
     else if (a === 'wybierz-do') arkuszDo();
@@ -1073,7 +1234,9 @@ navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.rzecz)
 
 // ---------- start ----------
 async function start() {
-  if (!S.token) return ekranLogowania();
+  const dolacz = /^#dolacz=([A-Za-z0-9-]{8,9})$/.exec(location.hash);
+  if (!S.token) return dolacz ? ekranLogowania('', true, dolacz[1].toUpperCase()) : ekranLogowania();
+  if (dolacz) history.replaceState(null, '', location.pathname);
   szkielet(); rysuj(); odswiezPisanie();
   try { await wczytajStan(); } catch (e) { if (e.status !== 401) { S.zaladowano = true; rysuj(); komunikat(e.message, 'x'); } }
   if (!S.token) return;
